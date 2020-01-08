@@ -6,7 +6,7 @@ description: "Sitecore Powershell Script for creating items for each media item"
 
 This script walk through each item in the media folder and create a matching item (in this case setting the File and sxatags field) in the content tree
 
-```
+```powershell
 function ProcessChildren($path)
 {
     $childItems = Get-Item master: -Query $path"/*"

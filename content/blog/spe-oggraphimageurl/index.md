@@ -6,7 +6,7 @@ description: "Sitecore Powershell Script to bulk update SXA OgGraphImageUrl"
 
 This script will start at the $rootItem and for each child matching the $sourceTemplate will attempt to extract the Image field (if it exists) and copy this to the OpenGraphImageUrl field
 
-```
+```powershell
 $rootItem = Get-Item "{GUID-HERE}"
 $sourceTemplate = Get-Item "{GUID-HERE}";
 
