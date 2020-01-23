@@ -1,64 +1,85 @@
-const path = require(`path`)
-const { createFilePath } = require(`gatsby-source-filesystem`)
+const path = require("path");
+const _ = require("lodash");
+const { getRootQuery } = require("gatsby-source-graphql-universal/getRootQuery");
+const { linkResolver } = require("./src/utils/linkResolver")
 
 exports.createPages = async ({ graphql, actions }) => {
-  const { createPage } = actions
+    const { createPage } = actions;    
+    const tagPage = path.resolve("src/templates/tag.jsx");
+    const categoryPage = path.resolve("src/templates/category.jsx");    
 
-  const blogPost = path.resolve(`./src/templates/blog-post.js`)
-  const result = await graphql(
-    `
+    const prismicQueryResult = await graphql(
+      `
       {
-        allMarkdownRemark(
-          sort: { fields: [frontmatter___date], order: DESC }
-          limit: 1000
-        ) {
-          edges {
-            node {
-              fields {
-                slug
-              }
-              frontmatter {
+        prismic {
+          allPosts(sortBy: date_DESC) {
+            edges {
+              node {
+                _meta {
+                  id
+                  uid
+                  type
+                }
                 title
+                category
+                date
+                tags {
+                  tag {
+                    _linkType
+                    ... on PRISMIC_Tag {
+                      name
+                      _linkType
+                    }
+                  }
+                }
               }
             }
           }
         }
       }
-    `
-  )
-
-  if (result.errors) {
-    throw result.errors
-  }
-
-  // Create blog posts pages.
-  const posts = result.data.allMarkdownRemark.edges
-
-  posts.forEach((post, index) => {
-    const previous = index === posts.length - 1 ? null : posts[index + 1].node
-    const next = index === 0 ? null : posts[index - 1].node
-
-    createPage({
-      path: post.node.fields.slug,
-      component: blogPost,
-      context: {
-        slug: post.node.fields.slug,
-        previous,
-        next,
-      },
-    })
-  })
-}
-
-exports.onCreateNode = ({ node, actions, getNode }) => {
-  const { createNodeField } = actions
-
-  if (node.internal.type === `MarkdownRemark`) {
-    const value = createFilePath({ node, getNode })
-    createNodeField({
-      name: `slug`,
-      node,
-      value,
-    })
-  }
-}
+      `
+    );
+  
+    if (prismicQueryResult.errors) {
+      console.error(prismicQueryResult.errors);
+      throw prismicQueryResult.errors;
+    }
+  
+    const tagSet = new Set();
+    const categorySet = new Set();
+  
+    const postsEdges = prismicQueryResult.data.prismic.allPosts.edges;
+  
+    postsEdges.forEach((edge, index) => {
+      
+      if(edge.node.tags)
+      {
+        edge.node.tags.forEach(tags => {
+          tagSet.add(tags.tag.name);
+        })
+      }      
+      if(edge.node.category)
+      {
+        categorySet.add(edge.node.category);
+      }
+    });
+  
+    tagSet.forEach(tagValue => {
+      createPage({
+        path: `/tags/${_.kebabCase(tagValue)}/`,
+        component: tagPage,
+        context: {
+          tagValue
+        }
+      });
+    });
+    categorySet.forEach(category => {
+      createPage({
+        path: `/categories/${_.kebabCase(category)}/`,
+        component: categoryPage,
+        context: {
+          category
+        }
+      });
+    });    
+  };

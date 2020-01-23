@@ -1,9 +1,3 @@
-/**
- * Configure your Gatsby site with this file.
- *
- * See: https://www.gatsbyjs.org/docs/gatsby-config/
- */
-
 module.exports = {
   siteMetadata: {
     title: `Missing Wires`,
@@ -12,34 +6,23 @@ module.exports = {
     siteUrl: `https://missingwires.com/`
   },
   plugins: [
-    {
-      resolve: `gatsby-source-filesystem`,
-      options: {
-        path: `${__dirname}/content/blog`,
-        name: `blog`,
-      },
-    },    
-    {
-      resolve: `gatsby-transformer-remark`,
-      options: {
-        plugins: [
-          {
-            resolve: `gatsby-remark-images`,
-            options: {
-              maxWidth: 800,
-            },
-          },
-          `gatsby-remark-copy-linked-files`,
-          `gatsby-remark-prismjs`,
-        ],
-      },
-    },
     `gatsby-plugin-react-helmet`,
+    `gatsby-plugin-sass`,
+    `gatsby-transformer-sharp`,
+    `gatsby-plugin-sharp`,
     {
-      resolve: `gatsby-plugin-typography`,
+      resolve: `gatsby-source-prismic-graphql`,
       options: {
-        pathToConfigModule: `src/utils/typography`,
-      },
+        repositoryName: 'missingwires',
+        previews: true,
+        path: '/preview',
+        pages: [{
+          type: 'Post',
+          match: '/blog/:uid',
+          path: '/blog-preview',
+          component: require.resolve('./src/templates/post.jsx')
+        }]
+      }
     },
   ],
   }
