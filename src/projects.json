@@ -1,0 +1,20 @@
+{
+  "site": {
+    "title": "missingwires",
+    "tagline": "A few small things I build and keep online."
+  },
+  "projects": [
+    {
+      "slug": "gt",
+      "name": "GridText",
+      "description": "A self-drawn spatial text editor — a single-file, zero-build canvas for arranging text, tables and regions on an infinite grid.",
+      "status": "live"
+    },
+    {
+      "slug": "tuner",
+      "name": "Tuner",
+      "description": "Placeholder for the next project. Drop its files in src/tuner/ and it appears here automatically.",
+      "status": "wip"
+    }
+  ]
+}

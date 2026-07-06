@@ -1,0 +1,14 @@
+{
+  "name": "missingwires-site",
+  "version": "1.0.0",
+  "private": true,
+  "description": "missingwires.com — static multi-project site. CI minifies and deploys to GitHub Pages.",
+  "type": "module",
+  "scripts": {
+    "build": "node build/build.mjs",
+    "preview": "node build/build.mjs && node -e \"import('node:http').then(async({default:h})=>{const fs=await import('node:fs');const p=await import('node:path');const root=p.resolve('dist');const t={'.html':'text/html','.js':'text/javascript','.css':'text/css','.json':'application/json','.svg':'image/svg+xml'};h.createServer((q,s)=>{let f=p.join(root,decodeURIComponent(q.url.split('?')[0]));if(f.endsWith('/'))f=p.join(f,'index.html');if(fs.existsSync(f)&&fs.statSync(f).isDirectory())f=p.join(f,'index.html');fs.readFile(f,(e,d)=>{if(e){s.writeHead(404);s.end('404');}else{s.writeHead(200,{'content-type':t[p.extname(f)]||'application/octet-stream'});s.end(d);}});}).listen(8080,()=>console.log('preview http://localhost:8080'));})\""
+  },
+  "devDependencies": {
+    "terser": "5.31.6"
+  }
+}
