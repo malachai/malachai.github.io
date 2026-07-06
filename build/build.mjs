@@ -152,7 +152,7 @@ function renderLanding({ site = {}, projects = [] }) {
   <main>
 ${cards}
   </main>
-  <footer>Hosted on GitHub Pages.</footer>
+  <footer>.</footer>
 </body>
 </html>
 `;
