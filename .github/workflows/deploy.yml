@@ -2,7 +2,7 @@ name: Deploy site to GitHub Pages
 
 on:
   push:
-    branches: [main] # change if your default branch is 'master' or similar
+    branches: [master] 
   workflow_dispatch: # lets you re-run a deploy manually from the Actions tab
 
 # Least-privilege permissions the Pages deploy needs.
