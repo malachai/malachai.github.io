@@ -2,7 +2,7 @@ name: Deploy site to GitHub Pages
 
 on:
   push:
-    branches: [master] # change if your default branch is 'master' or similar
+    branches: [master]
   workflow_dispatch: # lets you re-run a deploy manually from the Actions tab
 
 # Least-privilege permissions the Pages deploy needs.
@@ -19,6 +19,10 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      # Silence only the harmless punycode deprecation (DEP0040) that npm's
+      # transitive deps still trigger. Surgical — every other warning stays visible.
+      NODE_OPTIONS: --disable-warning=DEP0040
     steps:
       - uses: actions/checkout@v5
 
