@@ -777,3 +777,110 @@ The surrounding `missingwires.com` site does \*\*not\*\* serve the repo root as-
 \- The homepage card grid is generated from `src/projects.json`. Making the doodles section appear on `missingwires.com` means adding one project entry (`"slug": "webgl"`) to that file. `src/projects.json` is \*\*outside `src/webgl/`\*\*, so the agent \*\*proposes\*\* the entry (paste-ready) and the owner applies it — the agent never edits it. Once present, the card links to `/webgl/`, which is served by `src/webgl/index.html` (inside the boundary).
 
 \- The section landing (`src/webgl/index.html`) is the doodles gallery; individual doodles link back to it via `../../index.html` (→ `/webgl/`), and it links back to the site root via `/`.
+
+
+
+\---
+
+
+
+\## 16. Corrections \& clarifications from doodle 001
+
+\*Building the first doodle shook these out. They amend the sections named; a later consolidation pass can fold them back inline.\*
+
+
+
+\### 16.1 The standalone bootstrap (amends §7)
+
+
+
+A doodle is an \*\*inert default-export object\*\* — loading `doodle.js` does not run anything. Each doodle's `index.html` therefore carries a small inline bootstrap that drives support-check → device → `doodle.init` → `runLoop`. §7's `<script type="module" src="./doodle.js">` line was misleading; the real shape `_template/index.html` should carry is:
+
+
+
+```html
+<script type="importmap">
+{ "imports": { "doodle-lib/": "../../lib/" } }
+</script>
+
+<script type="module">
+  import doodle from "./doodle.js";
+  import { isWebGPUAvailable, renderFallback } from "doodle-lib/support.js";
+  import { initGPU } from "doodle-lib/gpu.js";
+  import { runLoop } from "doodle-lib/loop.js";
+
+  const canvas = document.getElementById("c");
+  const stage  = document.getElementById("stage");
+
+  // Fetch WGSL relative to this page (the doodle folder).
+  const loadWGSL = (url) =>
+    fetch(new URL(url, import.meta.url)).then((r) => {
+      if (!r.ok) throw new Error(`Failed to load ${url}: HTTP ${r.status}`);
+      return r.text();
+    });
+
+  (async () => {
+    if (!isWebGPUAvailable()) {
+      renderFallback(stage, { reason: "no-webgpu", thumbnail: doodle.meta.thumbnail });
+      return;
+    }
+    try {
+      const { adapter, device, context, format } = await initGPU(canvas);
+      const instance = await doodle.init({
+        device, adapter, context, canvas, format, loadWGSL,
+        mode: "standalone", quality: 1,
+      });
+      runLoop(instance, { canvas, context, device });   // handle exposes pause()/resume()/stop()
+    } catch (err) {
+      console.error(err);
+      renderFallback(stage, { reason: String(err?.message || err), thumbnail: doodle.meta.thumbnail });
+    }
+  })();
+</script>
+```
+
+
+
+The bootstrap stays \*\*inline per doodle\*\* (not a shared `lib/standalone.js`) so a doodle folder runs with zero shared assumptions beyond `lib/`. `loadWGSL` is defined here and passed into `ctx`; `import.meta.url` resolves WGSL against the doodle folder. A pause/play button (§10) is optional and wires to the `runLoop` handle.
+
+
+
+\### 16.2 `group(0) binding(0)` belongs to the doodle (amends §8)
+
+
+
+\*\*Decision: doodles own `group(0) binding(0)`; the runtime does not fill a `Globals` uniform.\*\* Filling a shared `Globals` would force a runtime-owned buffer into every pipeline's bind group, which collides with doodles building their own bind groups. So:
+
+
+
+\- The runtime passes per-frame values to `frame({ t, dt, frameIndex })`. If a doodle wants them on the GPU, it declares \*\*its own\*\* uniform at `group(0) binding(0)` and writes them itself each frame.
+
+\- The `Globals` struct in §8 is a \*\*recommended layout to copy\*\*, not something the runtime provides. A doodle that needs no globals (like 001, which uploads only an MVP matrix) just puts whatever it wants at that binding.
+
+\- Doodles remain free to add more bind groups at `group(1)+`.
+
+
+
+\### 16.3 Cold start / bootstrapping
+
+
+
+The very first doodle in a fresh tree also brings up the minimum shared runtime it needs (`lib/support.js`, `lib/gpu.js`, `lib/loop.js`). Don't assume `lib/`, `_template/`, `gallery.js`, `manifest.json`, or `tools/` already exist — build the smallest slice the current doodle requires and leave the rest for later increments.
+
+
+
+\### 16.4 Current state vs. target
+
+
+
+\- \*\*Live-thumbnail gallery (§6) is the target, not the current build.\*\* The section landing (`src/webgl/index.html`) currently renders \*\*static\*\* cards (a gradient thumb + link) from `manifest.json`. The `IntersectionObserver` / concurrency-cap / reduced-quality live-canvas policy and `lib/gallery.js` are not built yet.
+
+\- \*\*`tools/build-manifest.mjs` (§11 step 6) does not exist yet.\*\* `manifest.json` is hand-maintained until it does — add a `{ slug, path, title, description, tags, created, thumbnail }` entry per doodle.
+
+
+
+\### 16.5 Filename
+
+
+
+This file is \*\*`spec.md`\*\* (lowercase). References to `SPEC.md` in §3's tree and in the companion system prompt mean this same file; on case-sensitive hosts (Linux/CI) the casing matters, so prefer `spec.md`.

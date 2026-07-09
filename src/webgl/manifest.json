@@ -9,6 +9,15 @@
       "tags": ["mesh", "3d", "color", "transparency"],
       "created": "2026-07-09",
       "thumbnail": null
+    },
+    {
+      "slug": "002-yarn-pillow",
+      "path": "doodles/002-yarn-pillow/",
+      "title": "Yarn Pillow",
+      "description": "A single woolen yarn winds along a Hilbert curve around an invisible pillow, covering both sides, with rainbow colour flowing forward forever.",
+      "tags": ["mesh", "3d", "curve", "generative", "color"],
+      "created": "2026-07-09",
+      "thumbnail": null
     }
   ]
 }

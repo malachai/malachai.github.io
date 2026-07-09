@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Yarn Pillow — WebGPU doodle</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: #0e0e12;
+    color: #e9e9ee;
+    font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+  }
+  header { padding: 16px 20px 8px; }
+  header a.back { color: #9aa0ff; text-decoration: none; font-size: 13px; }
+  header a.back:hover { text-decoration: underline; }
+  h1 { margin: 6px 0 2px; font-size: 18px; font-weight: 600; }
+  p.desc { margin: 0; color: #a7a7b3; font-size: 13px; max-width: 60ch; }
+  #stage {
+    flex: 1;
+    min-height: 0;
+    margin: 12px 20px 20px;
+    border-radius: 10px;
+    overflow: hidden;
+    background:
+      radial-gradient(120% 120% at 50% 40%, #17171d 0%, #0a0a0e 100%);
+    position: relative;
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+  .controls {
+    position: absolute; left: 12px; bottom: 12px;
+    display: flex; gap: 8px;
+  }
+  .controls button {
+    background: rgba(255,255,255,0.08);
+    color: #e9e9ee;
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 6px;
+    padding: 5px 12px;
+    font: inherit; font-size: 13px;
+    cursor: pointer;
+  }
+  .controls button:hover { background: rgba(255,255,255,0.14); }
+  .doodle-fallback {
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 14px; height: 100%;
+    padding: 24px; text-align: center; color: #c7c7d1;
+  }
+  .doodle-fallback img { max-width: 480px; width: 100%; border-radius: 8px; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "doodle-lib/": "../../lib/"
+  }
+}
+</script>
+</head>
+<body>
+  <header>
+    <a class="back" href="../../index.html">← gallery</a>
+    <h1>Yarn Pillow</h1>
+    <p class="desc">
+      A single woolen yarn winds along a Hilbert curve around an invisible
+      pillow, covering both sides, with rainbow colour flowing forward forever.
+    </p>
+  </header>
+
+  <div id="stage">
+    <canvas id="c" aria-label="A single strand of woolen yarn wound in a space-filling path around a puffy pillow shape, with rainbow colours flowing along its length."></canvas>
+    <div class="controls"><button id="toggle" type="button">Pause</button></div>
+  </div>
+
+  <script type="module">
+    import doodle from "./doodle.js";
+    import { isWebGPUAvailable, renderFallback } from "doodle-lib/support.js";
+    import { initGPU } from "doodle-lib/gpu.js";
+    import { runLoop } from "doodle-lib/loop.js";
+
+    const canvas = document.getElementById("c");
+    const stage = document.getElementById("stage");
+    const toggle = document.getElementById("toggle");
+
+    // Fetch WGSL relative to this page (the doodle folder).
+    const loadWGSL = (url) =>
+      fetch(new URL(url, import.meta.url)).then((r) => {
+        if (!r.ok) throw new Error(`Failed to load ${url}: HTTP ${r.status}`);
+        return r.text();
+      });
+
+    (async () => {
+      if (!isWebGPUAvailable()) {
+        toggle.remove();
+        renderFallback(stage, { reason: "no-webgpu", thumbnail: doodle.meta.thumbnail });
+        return;
+      }
+      try {
+        const { adapter, device, context, format } = await initGPU(canvas);
+        const instance = await doodle.init({
+          device, adapter, context, canvas, format, loadWGSL,
+          mode: "standalone", quality: 1,
+        });
+        const handle = runLoop(instance, { canvas, context, device });
+
+        let playing = true;
+        toggle.addEventListener("click", () => {
+          playing = !playing;
+          if (playing) handle.resume();
+          else handle.pause();
+          toggle.textContent = playing ? "Pause" : "Play";
+        });
+      } catch (err) {
+        console.error(err);
+        toggle.remove();
+        renderFallback(stage, {
+          reason: String((err && err.message) || err),
+          thumbnail: doodle.meta.thumbnail,
+        });
+      }
+    })();
+  </script>
+</body>
+</html>
