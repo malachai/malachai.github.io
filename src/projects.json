@@ -15,6 +15,12 @@
       "name": "Tuner",
       "description": "Placeholder for the next project. Drop its files in src/tuner/ and it appears here automatically.",
       "status": "wip"
+    },
+    {
+      "slug": "webgl",
+      "name": "WebGL Experiements",
+      "description": "Gallery of strange webgl things",
+      "status": "live"
     }
   ]
 }

@@ -1,0 +1,14 @@
+{
+  "generated": "2026-07-09",
+  "doodles": [
+    {
+      "slug": "001-rgb-cube",
+      "path": "doodles/001-rgb-cube/",
+      "title": "RGB Cube",
+      "description": "A slowly spinning translucent cube whose surface maps 3D position to colour, showing the full RGB space.",
+      "tags": ["mesh", "3d", "color", "transparency"],
+      "created": "2026-07-09",
+      "thumbnail": null
+    }
+  ]
+}

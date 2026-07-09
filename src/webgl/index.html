@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>WebGPU Doodles — missingwires</title>
+<meta name="description" content="Small self-contained WebGPU experiments." />
+<meta name="color-scheme" content="dark" />
+<style>
+  :root {
+    --bg:#21252b; --panel:#282c34; --line:#3a404b;
+    --fg:#abb2bf; --fg-strong:#e6e6e6; --muted:#7f8896; --accent:#56b6c2;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh; display: flex; flex-direction: column; align-items: center;
+    padding: 9vh 24px 6vh;
+  }
+  header { max-width: 760px; width: 100%; margin-bottom: 2rem; }
+  .crumb { color: var(--muted); text-decoration: none; font-size: .85rem; }
+  .crumb:hover { color: var(--accent); }
+  h1 { margin: .4rem 0 0; font-size: 1.9rem; color: var(--fg-strong); letter-spacing: -.01em; }
+  h1 .dot { color: var(--accent); }
+  .tagline { margin: .5rem 0 0; color: var(--muted); }
+  .note {
+    max-width: 760px; width: 100%; margin: 0 0 1.5rem;
+    color: var(--muted); font-size: .82rem;
+  }
+  #unsupported {
+    display: none; max-width: 760px; width: 100%; margin: 0 0 1.5rem;
+    background: #2c2622; border: 1px solid #4a3f34; border-radius: 10px;
+    padding: 12px 16px; color: #d8c3a5; font-size: .85rem;
+  }
+  main { max-width: 760px; width: 100%; display: grid; gap: 16px; }
+  .card {
+    display: block; text-decoration: none; color: inherit;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    overflow: hidden; transition: border-color .15s ease, transform .15s ease;
+  }
+  .card:hover { border-color: var(--accent); transform: translateY(-2px); }
+  .thumb {
+    height: 120px;
+    background:
+      linear-gradient(135deg,
+        #ff0000 0%, #ffff00 20%, #00ff00 40%,
+        #00ffff 60%, #0000ff 80%, #ff00ff 100%);
+    opacity: .85;
+  }
+  .card-body { padding: 16px 20px 18px; }
+  .card-head { display: flex; align-items: baseline; gap: 10px; }
+  .card h2 { margin: 0; font-size: 1.12rem; color: var(--fg-strong); }
+  .card .seq { color: var(--muted); font-size: .78rem; }
+  .card p { margin: .5rem 0 .75rem; color: var(--fg); font-size: .92rem; }
+  .tags { display: flex; flex-wrap: wrap; gap: 6px; }
+  .tag {
+    font-size: .7rem; color: var(--accent);
+    border: 1px solid var(--line); border-radius: 999px; padding: 1px 8px;
+  }
+  footer { max-width: 760px; width: 100%; margin-top: auto; padding-top: 3rem; color: var(--muted); font-size: .82rem; }
+  footer a { color: var(--muted); }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "doodle-lib/": "./lib/"
+  }
+}
+</script>
+</head>
+<body>
+  <header>
+    <a class="crumb" href="/">← missingwires</a>
+    <h1>WebGPU Doodles<span class="dot">.</span></h1>
+    <p class="tagline">Small self-contained WebGPU experiments.</p>
+  </header>
+
+  <p class="note">
+    Each doodle runs on its own page — click a card. WebGPU required (recent
+    Chrome, Edge, or Safari with hardware acceleration on).
+  </p>
+  <div id="unsupported">
+    WebGPU isn't available in this browser, so the doodles won't run here.
+    Try the latest Chrome, Edge, or Safari with hardware acceleration enabled.
+  </div>
+
+  <main id="grid"></main>
+  <footer>.</footer>
+
+  <script type="module">
+    import { isWebGPUAvailable } from "doodle-lib/support.js";
+
+    if (!isWebGPUAvailable()) {
+      document.getElementById("unsupported").style.display = "block";
+    }
+
+    const esc = (s) =>
+      String(s).replace(/[&<>"]/g, (c) =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+    try {
+      const res = await fetch("./manifest.json");
+      if (!res.ok) throw new Error(`manifest ${res.status}`);
+      const { doodles = [] } = await res.json();
+      const grid = document.getElementById("grid");
+      grid.innerHTML = doodles
+        .map((d) => {
+          const seq = (d.slug || "").split("-")[0];
+          const tags = (d.tags || [])
+            .map((t) => `<span class="tag">${esc(t)}</span>`)
+            .join("");
+          return `
+            <a class="card" href="${esc(d.path)}">
+              <div class="thumb"></div>
+              <div class="card-body">
+                <div class="card-head">
+                  <h2>${esc(d.title || d.slug)}</h2>
+                  <span class="seq">${esc(seq)}</span>
+                </div>
+                <p>${esc(d.description || "")}</p>
+                <div class="tags">${tags}</div>
+              </div>
+            </a>`;
+        })
+        .join("\n");
+    } catch (err) {
+      console.error(err);
+      document.getElementById("grid").innerHTML =
+        `<p class="note">Couldn't load the doodle list: ${esc(err.message)}</p>`;
+    }
+  </script>
+</body>
+</html>
