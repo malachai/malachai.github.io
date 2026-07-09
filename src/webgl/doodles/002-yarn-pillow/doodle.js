@@ -7,6 +7,10 @@
 // (2-ply twist + fibre fuzz + rainbow) scrolls forward, so the yarn reads as
 // physically moving, endlessly.
 //
+// The pillow shape is live-editable via setShape() — the vertex *count* is fixed
+// regardless of shape, so a rebuild is just recomputed positions re-uploaded to
+// the same buffer (no pipeline/buffer churn).
+//
 // Nothing here relies on identifier names surviving minification (spec §15).
 
 // --- small vec3 helpers (plain [x,y,z] arrays) ---
@@ -56,17 +60,15 @@ function hilbertD2XY(n, d) {
 }
 
 // --- Pillow surface: (u,v) in (0,1)² → 3D point. ---
-// Footprint is a rounded square (squircle) so the corners are soft, like a
-// matchbook. The face bulges to a max in the middle and pinches to z≈0 at the
-// rim, where it meets the other face.
-const ROUND = 0.5; // 0 = hard square, 1 = full circle
-function pillowPoint(u, v, side, W, H, T) {
+// round: 0 = hard square footprint, 1 = full circle (squircle in between).
+// dome:  bulge exponent — <1 boxy/flat-topped, >1 pointy.
+function pillowPoint(u, v, side, W, H, T, round, dome) {
   const a = 2 * u - 1, b = 2 * v - 1; // [-1,1]
   const rx = a * Math.sqrt(1 - 0.5 * b * b);
   const ry = b * Math.sqrt(1 - 0.5 * a * a);
-  const x = ((1 - ROUND) * a + ROUND * rx) * 0.5 * W;
-  const y = ((1 - ROUND) * b + ROUND * ry) * 0.5 * H;
-  const bulge = Math.sin(Math.PI * u) * Math.sin(Math.PI * v);
+  const x = ((1 - round) * a + round * rx) * 0.5 * W;
+  const y = ((1 - round) * b + round * ry) * 0.5 * H;
+  const bulge = Math.pow(Math.sin(Math.PI * u) * Math.sin(Math.PI * v), dome);
   return [x, y, side * T * bulge];
 }
 
@@ -96,24 +98,42 @@ function chaikinClosed(P, iters) {
 }
 
 // --- Build the closed strand centreline over both pillow faces. ---
-function buildCenterline(order, W, H, T) {
+function buildCenterline(order, W, H, T, round, dome) {
   const n = 1 << order;
   const M = n * n;
   const raw = [];
   for (let d = 0; d < M; d++) {
     const [gx, gy] = hilbertD2XY(n, d);
-    raw.push(pillowPoint((gx + 0.5) / n, (gy + 0.5) / n, 1, W, H, T));
+    raw.push(pillowPoint((gx + 0.5) / n, (gy + 0.5) / n, 1, W, H, T, round, dome));
   }
   for (let d = M - 1; d >= 0; d--) {
     const [gx, gy] = hilbertD2XY(n, d);
-    raw.push(pillowPoint((gx + 0.5) / n, (gy + 0.5) / n, -1, W, H, T));
+    raw.push(pillowPoint((gx + 0.5) / n, (gy + 0.5) / n, -1, W, H, T, round, dome));
   }
   return raw; // closed loop
 }
 
-// --- Extrude a round tube along a closed centreline (parallel-transport
-//     frame with closure correction). Vertex = [pos(3) nrm(3) arclen(1) coord(1)]. ---
-function buildTube(P, radius, ring) {
+// --- Tube indices depend only on point count & ring — computed once. ---
+function tubeIndices(K, ring) {
+  const idx = new Uint32Array(K * ring * 6);
+  let p = 0;
+  for (let i = 0; i < K; i++) {
+    const i0 = i * ring;
+    const i1 = ((i + 1) % K) * ring;
+    for (let j = 0; j < ring; j++) {
+      const j1 = (j + 1) % ring;
+      const a = i0 + j, b = i0 + j1, c = i1 + j, dd = i1 + j1;
+      idx[p++] = a; idx[p++] = c; idx[p++] = b;
+      idx[p++] = b; idx[p++] = c; idx[p++] = dd;
+    }
+  }
+  return idx;
+}
+
+// --- Extrude a round tube along a closed centreline (parallel-transport frame
+//     with closure correction). Returns interleaved [pos(3) nrm(3) arclen coord]
+//     and the total length. ---
+function buildTubeVerts(P, radius, ring, out) {
   const K = P.length;
 
   const T = new Array(K);
@@ -155,7 +175,6 @@ function buildTube(P, radius, ring) {
     }
   }
 
-  const verts = new Float32Array(K * ring * 8);
   let o = 0;
   for (let i = 0; i < K; i++) {
     const t = T[i];
@@ -166,36 +185,20 @@ function buildTube(P, radius, ring) {
       const coord = j / ring;
       const th = 2 * Math.PI * coord;
       const ct = Math.cos(th), st = Math.sin(th);
-      const dir = [
-        ct * nrm[0] + st * bin[0],
-        ct * nrm[1] + st * bin[1],
-        ct * nrm[2] + st * bin[2],
-      ];
-      verts[o++] = P[i][0] + radius * dir[0];
-      verts[o++] = P[i][1] + radius * dir[1];
-      verts[o++] = P[i][2] + radius * dir[2];
-      verts[o++] = dir[0];
-      verts[o++] = dir[1];
-      verts[o++] = dir[2];
-      verts[o++] = arclen;
-      verts[o++] = coord;
+      const dx = ct * nrm[0] + st * bin[0];
+      const dy = ct * nrm[1] + st * bin[1];
+      const dz = ct * nrm[2] + st * bin[2];
+      out[o++] = P[i][0] + radius * dx;
+      out[o++] = P[i][1] + radius * dy;
+      out[o++] = P[i][2] + radius * dz;
+      out[o++] = dx;
+      out[o++] = dy;
+      out[o++] = dz;
+      out[o++] = arclen;
+      out[o++] = coord;
     }
   }
-
-  const idx = new Uint32Array(K * ring * 6);
-  let p = 0;
-  for (let i = 0; i < K; i++) {
-    const i0 = i * ring;
-    const i1 = ((i + 1) % K) * ring;
-    for (let j = 0; j < ring; j++) {
-      const j1 = (j + 1) % ring;
-      const a = i0 + j, b = i0 + j1, c = i1 + j, dd = i1 + j1;
-      idx[p++] = a; idx[p++] = c; idx[p++] = b;
-      idx[p++] = b; idx[p++] = c; idx[p++] = dd;
-    }
-  }
-
-  return { verts, idx, totalLen };
+  return totalLen;
 }
 
 // --- tiny column-major mat4 helpers ---
@@ -243,27 +246,44 @@ function rotY(a) {
   return o;
 }
 
-// --- parameters ---
+// --- fixed parameters ---
 const ORDER = 5;              // Hilbert order → 32×32 cells per face
-const W = 2.2, H = 2.2;       // pillow footprint
-const T = 0.30;               // half-thickness (matchbook is fairly flat)
+const BASE_SIZE = 2.1;        // reference footprint edge (world units)
 const CHAIKIN = 2;            // smoothing passes
 const RING = 10;              // tube cross-section segments
 const RADIUS_FACTOR = 0.30;   // thin yarn (fraction of row spacing)
-const COLOR_CYCLES = 6;       // whole rainbow bands around the loop (seamless)
 const FLOW_SPEED = 0.18;      // world units/second the pattern scrolls forward
 const PLY = 2;                // 2-ply yarn
 const PLY_PITCH = 0.09;       // world-space distance between twists
 const FRESNEL = 0.5;          // strength of the fuzzy fresnel halo
 
+const MAX_STRANDS = 1000;     // disconnected strands looping around the path
+const DEFAULT_STRANDS = 50;
+const DEFAULT_DUTY = 0.6;     // fraction of each strand-cell that is yarn (rest = gap)
+
 const DEPTH_FORMAT = "depth24plus";
+
+// --- live-editable pillow shape (defaults) ---
+const DEFAULT_SHAPE = {
+  round: 0.0,       // 0 hard square … 1 circle
+  thickness: 0.8,   // half-thickness (puffiness)
+  aspect: 1.0,      // width : height (area kept ~constant)
+  dome: 0.2,        // bulge exponent (<1 boxy, >1 pointy)
+};
+
+// Footprint W,H from aspect, keeping area roughly constant.
+function shapeDims(shape) {
+  const r = Math.sqrt(shape.aspect);
+  return { W: BASE_SIZE * r, H: BASE_SIZE / r, T: shape.thickness };
+}
 
 export default {
   meta: {
     title: "Yarn Pillow",
     description:
       "A single fluffy woolen yarn winds along a Hilbert curve around an " +
-      "invisible rounded pillow, its twist and rainbow flowing forward forever.",
+      "invisible rounded pillow, its twist and rainbow flowing forward forever. " +
+      "The pillow shape is adjustable.",
     tags: ["mesh", "3d", "curve", "generative", "color"],
     created: "2026-07-09",
     prefersReducedMotionSafe: false,
@@ -273,21 +293,43 @@ export default {
   async init(ctx) {
     const { device, context, format, loadWGSL } = ctx;
 
-    // --- geometry (built once) ---
-    const spacing = W / (1 << ORDER);
-    const radius = RADIUS_FACTOR * spacing;
-    const centre = buildCenterline(ORDER, W, H, T);
-    const smooth = chaikinClosed(centre, CHAIKIN);
-    const { verts, idx, totalLen } = buildTube(smooth, radius, RING);
+    // Vertex/index counts are fixed regardless of shape.
+    const K = 2 * (1 << ORDER) * (1 << ORDER) * (1 << CHAIKIN);
+    const idx = tubeIndices(K, RING);
     const indexCount = idx.length;
-    // Whole number of twists over the loop → the ply pattern is seamless too.
-    const twistCount = Math.max(1, Math.round(totalLen / PLY_PITCH));
+    const vertData = new Float32Array(K * RING * 8);
 
+    // Mutable shape state.
+    const shape = Object.assign({}, DEFAULT_SHAPE);
+    let dirty = false;
+
+    // Strand state: N disconnected strands loop around the path. Each strand is a
+    // "dash" — it occupies `duty` of its cell, the rest is a gap (discarded).
+    // Colour is derived procedurally from the strand index + a seed, so any count
+    // up to MAX_STRANDS works with no stored palette.
+    let strandCount = DEFAULT_STRANDS;
+    let duty = DEFAULT_DUTY;
+    let colorSeed = Math.random() * 1000;
+
+    // Recompute vertex positions for the current shape. Returns totalLen.
+    function computeVerts() {
+      const { W, H, T } = shapeDims(shape);
+      const spacing = ((W + H) / 2) / (1 << ORDER);
+      const radius = RADIUS_FACTOR * spacing;
+      const centre = buildCenterline(ORDER, W, H, T, shape.round, shape.dome);
+      const smooth = chaikinClosed(centre, CHAIKIN);
+      return buildTubeVerts(smooth, radius, RING, vertData);
+    }
+
+    let totalLen = computeVerts();
+    let twistCount = Math.max(1, Math.round(totalLen / PLY_PITCH));
+
+    // --- buffers ---
     const vbuf = device.createBuffer({
-      size: verts.byteLength,
+      size: vertData.byteLength,
       usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
     });
-    device.queue.writeBuffer(vbuf, 0, verts);
+    device.queue.writeBuffer(vbuf, 0, vertData);
 
     const ibuf = device.createBuffer({
       size: idx.byteLength,
@@ -295,9 +337,9 @@ export default {
     });
     device.queue.writeBuffer(ibuf, 0, idx);
 
-    // Uniform: mvp(64) + model(64) + p0(16) + p1(16) = 160 bytes.
+    // Uniform: mvp(64) + model(64) + p0(16) + p1(16) + p2(16) = 176 bytes.
     const ubuf = device.createBuffer({
-      size: 160,
+      size: 176,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
 
@@ -333,7 +375,7 @@ export default {
               { shaderLocation: 0, offset: 0, format: "float32x3" },  // position
               { shaderLocation: 1, offset: 12, format: "float32x3" }, // normal
               { shaderLocation: 2, offset: 24, format: "float32" },   // arclen
-              { shaderLocation: 3, offset: 28, format: "float32" },   // coord (around tube)
+              { shaderLocation: 3, offset: 28, format: "float32" },   // coord
             ],
           },
         ],
@@ -363,17 +405,25 @@ export default {
     const mvp = new Float32Array(16);
     const p0 = new Float32Array(4);
     const p1 = new Float32Array(4);
+    const p2 = new Float32Array(4);
 
     return {
       frame({ t }) {
+        // Apply any pending shape change once per frame (throttles slider drags).
+        if (dirty) {
+          dirty = false;
+          totalLen = computeVerts();
+          twistCount = Math.max(1, Math.round(totalLen / PLY_PITCH));
+          device.queue.writeBuffer(vbuf, 0, vertData);
+        }
+
         const canvas = context.canvas;
         const w = canvas.width || 1, h = canvas.height || 1;
         if (!depthView) ensureDepth(w, h);
 
         const aspect = w / Math.max(1, h);
         const proj = perspective(Math.PI / 4, aspect, 0.1, 100);
-        const view = translate(0, 0, -3.6);
-        // Gentle tilt + slow spin so both faces of the pillow come into view.
+        const view = translate(0, 0, -4.0);
         const model = mul(rotY(t * 0.22), rotX(-0.6));
 
         mvp.set(mul(proj, mul(view, model)));
@@ -381,14 +431,17 @@ export default {
         device.queue.writeBuffer(ubuf, 64, model);
         p0[0] = t;
         p0[1] = totalLen;
-        p0[2] = COLOR_CYCLES;
-        p0[3] = FLOW_SPEED;
+        p0[2] = FLOW_SPEED;
+        p0[3] = strandCount;
         device.queue.writeBuffer(ubuf, 128, p0);
         p1[0] = twistCount;
         p1[1] = PLY;
         p1[2] = FRESNEL;
-        p1[3] = 0;
+        p1[3] = duty;
         device.queue.writeBuffer(ubuf, 144, p1);
+        p2[0] = colorSeed;
+        p2[1] = 0; p2[2] = 0; p2[3] = 0;
+        device.queue.writeBuffer(ubuf, 160, p2);
 
         const encoder = device.createCommandEncoder();
         const pass = encoder.beginRenderPass({
@@ -418,6 +471,38 @@ export default {
 
       resize({ width, height }) {
         ensureDepth(width, height);
+      },
+
+      // --- shape API for on-page controls ---
+      /** Merge partial shape values; rebuild happens on the next frame. */
+      setShape(partial) {
+        Object.assign(shape, partial);
+        dirty = true;
+      },
+      /** Current shape values (copy). */
+      getShape() {
+        return Object.assign({}, shape);
+      },
+
+      // --- strand API ---
+      /** Number of disconnected strands looping the path (1..MAX_STRANDS). */
+      setStrandCount(n) {
+        strandCount = Math.max(1, Math.min(MAX_STRANDS, Math.round(n)));
+      },
+      getStrandCount() {
+        return strandCount;
+      },
+      maxStrands: MAX_STRANDS,
+      /** Fraction of each strand-cell that is yarn (rest is a gap), 0.05..1. */
+      setCoverage(d) {
+        duty = Math.max(0.05, Math.min(1, d));
+      },
+      getCoverage() {
+        return duty;
+      },
+      /** Re-roll the random strand colours. */
+      shuffleColors() {
+        colorSeed = Math.random() * 1000;
       },
 
       destroy() {

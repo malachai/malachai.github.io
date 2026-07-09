@@ -1,13 +1,16 @@
-// 002-yarn-pillow — a single woolen strand following a Hilbert curve wrapped
-// around an invisible rounded pillow. The whole surface pattern (2-ply twist +
-// fibre fuzz + rainbow) scrolls forward along the strand, so the yarn reads as
-// physically advancing, endlessly. Doodle owns group(0) binding(0) (spec §16.2).
+// 002-yarn-pillow — one Hilbert path around an invisible rounded pillow, carrying
+// a set of DISCONNECTED woolen strands (dashes) that loop continuously around it.
+// Each strand occupies part of its cell (the gap is discarded) and has its own
+// procedurally-random colour. The strands + their 2-ply twist + fibre fuzz scroll
+// forward together, so they chase each other around the loop, endlessly.
+// Doodle owns group(0) binding(0) (spec §16.2).
 
 struct U {
   mvp    : mat4x4<f32>,   // projection * view * model
   model  : mat4x4<f32>,   // rotation only — transforms normals into view space
-  p0     : vec4<f32>,     // x=time, y=totalLen, z=colorCycles, w=flowSpeed (units/s)
-  p1     : vec4<f32>,     // x=twistCount, y=plyCount, z=fresnelAmt, w=unused
+  p0     : vec4<f32>,     // x=time, y=totalLen, z=flowSpeed, w=strandCount
+  p1     : vec4<f32>,     // x=twistCount, y=plyCount, z=fresnelAmt, w=duty
+  p2     : vec4<f32>,     // x=colorSeed
 };
 @group(0) @binding(0) var<uniform> u : U;
 
@@ -40,6 +43,9 @@ fn hue2rgb(h : f32) -> vec3<f32> {
   let b = clamp(2.0 - abs(k - 4.0), 0.0, 1.0);
   return vec3<f32>(r, g, b);
 }
+fn rand1(x : f32) -> f32 {
+  return fract(sin(x) * 43758.5453);
+}
 
 // --- cheap value-noise fbm for fibre fuzz ---
 fn hash21(p : vec2<f32>) -> f32 {
@@ -71,26 +77,36 @@ fn fbm(p : vec2<f32>) -> f32 {
 
 @fragment
 fn fs_main(in : VSOut) -> @location(0) vec4<f32> {
-  let N = normalize(in.nrm);
-  let V = vec3<f32>(0.0, 0.0, 1.0);
-
   let t      = u.p0.x;
   let L      = u.p0.y;
-  let cyc    = u.p0.z;
-  let flowV  = u.p0.w;
+  let flowV  = u.p0.z;
+  let Ns     = max(1.0, floor(u.p0.w + 0.5));
   let twistN = u.p1.x;
   let ply    = u.p1.y;
   let fresA  = u.p1.z;
+  let duty   = u.p1.w;
+  let seed   = u.p2.x;
 
-  // Everything is a function of sMove: the surface pattern slides forward along
-  // the strand as time advances → the yarn looks like it's actually moving.
+  // Position along the path, scrolling forward with time.
   let sMove = in.s - t * flowV;
   let c = in.coord;
 
-  // Gradual rainbow flowing with the yarn (integer cyc ⇒ seamless at the seam).
-  var base = hue2rgb(sMove / L * cyc);
-  let luma = dot(base, vec3<f32>(0.333, 0.333, 0.333));
-  base = mix(vec3<f32>(luma), base, 0.9);
+  // Which strand-cell is this, and where within it? Gap ⇒ discard → the strands
+  // become disconnected dashes with real space between them.
+  let g = fract(sMove / L) * Ns;
+  let cell = floor(g);
+  let localPos = g - cell;
+  if (localPos > duty) {
+    discard;
+  }
+
+  // Procedural random colour per strand (stable per cell, re-rolled by seed).
+  let hue = rand1((cell + 1.0) * 0.6180339 + seed * 1.37);
+  let val = 0.72 + 0.28 * rand1((cell + 1.0) * 2.7182818 + seed * 3.11);
+  var base = hue2rgb(hue) * val;
+
+  let N = normalize(in.nrm);
+  let V = vec3<f32>(0.0, 0.0, 1.0);
 
   // 2-ply helical twist. twistN whole twists over the loop ⇒ seamless.
   let twoPi = 6.2831853;
