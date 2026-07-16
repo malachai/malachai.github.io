@@ -56,6 +56,15 @@ async function run() {
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
   await rm(manifestPath, { force: true });
 
+  // Dev-only files never ship: section/doodle specs, the doodle template,
+  // and the manifest tool. They stay in the repo; they just don't publish.
+  console.log("• prune dev-only files");
+  await rm(path.join(DIST, "webgpu", "tools"), { recursive: true, force: true });
+  await rm(path.join(DIST, "webgpu", "doodles", "_template"), { recursive: true, force: true });
+  for (const file of await walk(DIST)) {
+    if (path.basename(file).toLowerCase() === "spec.md") await rm(file, { force: true });
+  }
+
   console.log("• minify JavaScript");
   let totalIn = 0,
     totalOut = 0;
