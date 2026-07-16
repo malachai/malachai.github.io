@@ -21,6 +21,12 @@
       "name": "WebGL Experiements",
       "description": "Gallery of strange webgl things",
       "status": "live"
+    },
+    {
+      "slug": "mtg",
+      "name": "MindTheGap",
+      "description": "A local-first, browser-only HTN/HDDL task compiler: it reads planning workspaces from a GitHub repo, decomposes a goal into an executable plan in the browser, and renders the solve across six surfaces (Tree, Icicle, Sunburst, Gantt, Flame, Causal).",
+      "status": "live"
     }
   ]
 }
