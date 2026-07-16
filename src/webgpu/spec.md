@@ -884,3 +884,56 @@ The very first doodle in a fresh tree also brings up the minimum shared runtime 
 
 
 This file is \*\*`spec.md`\*\* (lowercase). References to `SPEC.md` in §3's tree and in the companion system prompt mean this same file; on case-sensitive hosts (Linux/CI) the casing matters, so prefer `spec.md`.
+
+
+\---
+
+\## 17. Corrections \& clarifications from doodle 002
+
+\*Building the second doodle — a single yarn strand tracing a Hilbert curve over an invisible pillow, with live shape and strand controls — shook these out. They amend the sections named.\*
+
+\### 17.1 Depth buffer for self-occluding geometry (amends §4, §9)
+
+Doodle 001 avoided a depth buffer with a two-pass convex trick. Any opaque geometry that occludes itself — a tube, a mesh, particles drawn as quads — needs a real depth attachment instead.
+
+\- Create the depth texture lazily and recreate it in `resize({ width, height })`; it is the one size-dependent resource most doodles need. Destroy the old texture before creating the new one, and destroy the last in `destroy()`.
+
+\- Give the pipeline `depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" }`, and the render pass a `depthStencilAttachment` cleared to 1.0.
+
+\- The runtime applies a pending resize before the first `frame`, so `resize` runs first in practice — but still lazy-create the depth texture in `frame` as a guard, so the doodle is robust if it ever renders before a resize.
+
+\### 17.2 Uniform layout \& alignment (amends §8)
+
+Std140-style alignment bites as soon as a doodle uploads more than one matrix. Keep it mechanical:
+
+\- A `mat4x4<f32>` is 64 bytes; bundle loose scalars into `vec4<f32>` param slots (e.g. `p0 = (time, totalLen, flowSpeed, count)`) rather than many lone `f32`s, and keep the total uniform size a multiple of 16.
+
+\- A `vec3<f32>` still consumes 16 bytes of alignment — prefer `vec4` and ignore `.w`, or pack it on purpose.
+
+\- Per-frame values and rarely-changing data (a colour seed, a palette) can share one buffer; write sub-ranges independently with `queue.writeBuffer(ubuf, offset, data)`.
+
+\### 17.3 Doodles may expose extra methods for on-page controls (amends §4)
+
+The `DoodleInstance` contract — `frame` / `resize` / `destroy` — is the \*minimum\*, not the whole surface. A doodle may return additional methods (002 adds `setShape`, `getShape`, `setStrandCount`, `setCoverage`, `shuffleColors`) and its standalone `index.html` may own UI (sliders, buttons) that calls them. This stays within the spec:
+
+\- The runtime only ever calls `frame` / `resize` / `destroy`; any extra methods are ignored by it.
+
+\- Gallery mode never wires the controls, so the doodle still renders at its defaults — the doodle-never-assumes-it-owns-the-page rule (§4) holds.
+
+\- Keep control state in the instance closure (no globals, §4), and fold any expensive rebuild into the next `frame` behind a dirty flag, so slider drags coalesce to one rebuild per frame instead of thrashing the GPU.
+
+\- Performance note: if a control changes only vertex \*positions\* (not counts or topology), rebuild by recomputing the vertex array and re-uploading it to the same buffer — no pipeline or buffer recreation, and the index buffer is untouched.
+
+\### 17.4 Cache-busting during iteration (amends §14.1)
+
+A fast edit loop has a stale-module trap: the browser serves a freshly-edited `index.html` but a cached `doodle.js` or `shader.wgsl`, so the new HTML calls a method the old module lacks (it surfaces as, e.g., `instance.setCoverage is not a function`). Two fixes:
+
+\- Hard-reload (Ctrl/Cmd-Shift-R) after edits, or
+
+\- Have `index.html` append a per-load cache-buster to the files it owns: `const BUST = "?ts=" + Date.now();`, then `import("./doodle.js" + BUST)` and `fetch(url + BUST)` for WGSL. Shared `lib/` imports rarely change and don't need it.
+
+\- This refetches those two files on every load — ideal while iterating; drop or gate it if you later want production caching of a doodle's own JS. Using a dynamic `import()` also means the bootstrap loads `doodle.js` inside its async IIFE rather than as a top-level `import`.
+
+\### 17.5 Current state
+
+Two doodles now exist: `001-rgb-cube` and `002-yarn-pillow`. `manifest.json` carries both and is still hand-maintained (§16.4). `lib/gallery.js`, `tools/build-manifest.mjs`, `doodles/_template/`, and the live-thumbnail policy (§6) remain unbuilt, and neither doodle has a committed `thumb.png` yet (owner-captured, §14).

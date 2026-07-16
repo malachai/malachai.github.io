@@ -17,9 +17,9 @@
       "status": "wip"
     },
     {
-      "slug": "webgl",
-      "name": "WebGL Experiements",
-      "description": "Gallery of strange webgl things",
+      "slug": "webgpu",
+      "name": "WebGPU Experiements",
+      "description": "Gallery of strange webgpu things",
       "status": "live"
     },
     {
