@@ -1,12 +1,17 @@
 {
-  "generated": "2026-07-09",
+  "generated": "2026-07-16",
   "doodles": [
     {
       "slug": "001-rgb-cube",
       "path": "doodles/001-rgb-cube/",
       "title": "RGB Cube",
       "description": "A slowly spinning translucent cube whose surface maps 3D position to colour, showing the full RGB space.",
-      "tags": ["mesh", "3d", "color", "transparency"],
+      "tags": [
+        "mesh",
+        "3d",
+        "color",
+        "transparency"
+      ],
       "created": "2026-07-09",
       "thumbnail": null
     },
@@ -14,8 +19,14 @@
       "slug": "002-yarn-pillow",
       "path": "doodles/002-yarn-pillow/",
       "title": "Yarn Pillow",
-      "description": "A single woolen yarn winds along a Hilbert curve around an invisible pillow, covering both sides, with rainbow colour flowing forward forever.",
-      "tags": ["mesh", "3d", "curve", "generative", "color"],
+      "description": "A single fluffy woolen yarn winds along a Hilbert curve around an invisible rounded pillow, its twist and rainbow flowing forward forever. The pillow shape is adjustable.",
+      "tags": [
+        "mesh",
+        "3d",
+        "curve",
+        "generative",
+        "color"
+      ],
       "created": "2026-07-09",
       "thumbnail": null
     }

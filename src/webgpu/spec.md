@@ -1,939 +1,356 @@
-\# WebGPU Doodles — Project Spec
-
-
-
-A living spec for a repository of small, self-contained WebGPU experiments ("doodles"), served as a static site on GitHub Pages, presented through a gallery with live thumbnails.
-
-
-
-This document defines \*how the repo is structured and how a doodle must behave\* so that every experiment is drop-in, portable, and shows up in the gallery automatically. It is the source of truth the companion system prompt refers to.
-
-
-
-\---
-
-
-
-\## 0. Working boundary — read this first
-
-
-
-The doodles live \*\*inside a larger existing site\*\*, the `malachai.github.io` repository. This spec, and any agent driven by the companion system prompt, operate under a hard boundary:
-
-
-
-\- \*\*Read access is repo-wide.\*\* You may read any file in `malachai.github.io/` to understand context — the site's existing structure, styles, navigation, how Pages is configured, how other pages are wired up.
-
-\- \*\*Write access is limited to `src/webgl/`.\*\* Only files inside `malachai.github.io/src/webgl/` may be created, edited, or deleted directly. Everything doodle-related — the gallery, `lib/`, `doodles/`, `tools/`, manifest, styles for this section — lives under `src/webgl/`.
-
-\- \*\*Everything outside `src/webgl/` is suggest-only.\*\* If a change is needed elsewhere — a link in the site's top-level nav, an entry in a sitemap, a tweak to a shared header, a Pages config change, a root `index.html` redirect — \*\*do not edit it\*\*. Instead, describe the exact change (file path, what to add/modify, and a ready-to-paste snippet) and hand it to the repo owner to apply. The owner performs all such edits and all git actions.
-
-
-
-This keeps the doodles fully self-contained within their own subtree and guarantees the agent never disturbs the rest of the site. Wherever the sections below say "the repo root," read it as \*\*`src/webgl/` (the doodles root)\*\*, not the actual repository root.
-
-
-
-\---
-
-
-
-\## 1. Goals \& philosophy
-
-
-
-\- \*\*Low friction to start a new doodle.\*\* Making a new experiment should be "copy the template folder, edit the shader, refresh." No build step standing between an idea and pixels on screen.
-
-\- \*\*Each doodle is self-contained and portable.\*\* A doodle is a folder that runs on its own by opening its `index.html`. It should not secretly depend on the gallery to work.
-
-\- \*\*Shared plumbing, not shared style.\*\* Boring, error-prone WebGPU boilerplate (device init, canvas config, the render loop, resize, teardown) lives in one small shared library. The \*creative\* code — shaders, compute, geometry — stays in the doodle.
-
-\- \*\*The gallery is generated from the doodles, never the reverse.\*\* Adding a doodle to a manifest is the only registration step; the index page renders itself from that.
-
-\- \*\*Graceful when WebGPU is absent.\*\* As of 2026 WebGPU ships in all major browsers, but older versions, some Linux/Firefox configs, locked-down devices, and reduced-power modes still lack it. Every doodle and the gallery must detect support and degrade to a readable message or a static image rather than a blank canvas or a thrown error.
-
-
-
-Scope is deliberately \*\*open\*\*: fragment-shader visuals, compute particle systems, cellular automata, raymarching, mesh rendering, audio-reactive pieces — anything WebGPU can do is fair game. The contract below is medium-agnostic.
-
-
-
-\---
-
-
-
-\## 2. Tooling decision (and why)
-
-
-
-You asked for the trade-offs rather than a pick, so here they are, then the recommendation.
-
-
-
-\### Option A — Zero-build vanilla (plain HTML/JS/WGSL, no bundler)
-
-
-
-\*\*Pros\*\*
-
-\- Push and it works on Pages; there is no CI build to configure or break.
-
-\- Every doodle is trivially portable — a folder you can email to someone.
-
-\- Nothing to learn, nothing to update, no `node\_modules`.
-
-\- Easiest possible mental model for "open the file, see the change."
-
-
-
-\*\*Cons\*\*
-
-\- WebGPU boilerplate gets copy-pasted into every doodle unless you add module loading (which pushes you toward Option C anyway).
-
-\- No TypeScript, and the WebGPU API is verbose and easy to mistype (bind group layouts, vertex buffer strides, texture formats). You find the errors at runtime.
-
-\- The live-thumbnail gallery needs a hand-maintained manifest.
-
-
-
-\### Option B — Vite + TypeScript (dev server, build, deploy Action)
-
-
-
-\*\*Pros\*\*
-
-\- TypeScript + `@webgpu/types` catches a whole class of WebGPU API misuse before it runs — genuinely valuable given how fiddly the API is.
-
-\- Hot module reload makes shader iteration fast.
-
-\- Shared modules, WGSL-as-import plugins, and an auto-generated gallery manifest all come for free at build time.
-
-\- Minified, cache-busted output.
-
-
-
-\*\*Cons\*\*
-
-\- Adds a build pipeline and a GitHub Action to deploy to Pages; more moving parts and a `base` path to configure for project pages (`/<repo>/`).
-
-\- Slower "just push" loop; dependency maintenance over time.
-
-\- A doodle is no longer a portable folder — it needs the build to run.
-
-
-
-\### Option C — Vanilla + ES modules + import maps (recommended default)
-
-
-
-\*\*Pros\*\*
-
-\- \*\*No build step\*\* — deploys to Pages by pushing, like Option A.
-
-\- \*\*Shared code without duplication\*\* — a small `lib/` of ES modules is imported by every doodle via a bare specifier (`import { initGPU } from "doodle-lib/gpu.js"`), pinned by an import map.
-
-\- Doodles stay portable: each folder's `index.html` carries its own import map, so it runs standalone.
-
-\- Plays perfectly with a live-thumbnail gallery that shares one runtime module.
-
-\- Clean upgrade path: if type safety starts hurting, you can layer Vite/TS on top later without rewriting the doodle contract.
-
-
-
-\*\*Cons\*\*
-
-\- No TypeScript types out of the box. Mitigation: use JSDoc `@type` annotations on the shared lib plus the `@webgpu/types` file referenced via `// @ts-check` in editors — you get most of the safety in-editor without a build.
-
-\- The gallery manifest is maintained by a tiny local Node script (run by hand, committed output), not a build.
-
-\- Import maps must use paths that resolve correctly under the project-pages base path.
-
-
-
-\### Recommendation
-
-
-
-\*\*Go with Option C (vanilla + import maps).\*\* It keeps the push-to-deploy simplicity you want for rapid experimentation, eliminates boilerplate duplication, and is the natural fit for a shared-runtime live-thumbnail gallery — while leaving Vite/TS as a clean later upgrade if the lack of a type-checked build ever becomes the bottleneck. The rest of this spec assumes Option C.
-
-
-
-\---
-
-
-
-\## 3. Repository layout
-
-
-
-Everything doodle-related lives under `src/webgl/` — the \*\*writable working area\*\* (§0). The surrounding site is read-only context.
-
-
+# WebGPU Doodles — Section Spec
+
+A living spec for `src/webgpu/` — a gallery of small, self-contained WebGPU
+experiments ("doodles") inside the missingwires.com site. It defines how the
+section is structured and how a doodle must behave so that every experiment is
+drop-in, portable, and appears in the gallery automatically.
+
+This is the **overarching** spec: repo layout, deploy reality, the doodle
+contract, the shared runtime, and the workflow. Each doodle additionally
+carries its own `spec.md` describing its intent, technique, and control
+surface (see §10). Lessons learned while building a doodle are folded into
+this document (or the doodle's own spec) immediately — no more appended
+"corrections" sections.
+
+---
+
+## 0. Working boundary — read this first
+
+The doodles live inside the larger missingwires.com repo. This spec, and any
+agent driven by it, operate under a hard boundary:
+
+- **Read access is repo-wide.** Read anything to understand context — the
+  build, the workflow, how other sections are wired up.
+- **Write access is limited to `src/webgpu/`.** Everything doodle-related —
+  the gallery, `lib/`, `doodles/`, `tools/`, `manifest.json`, this spec —
+  lives here.
+- **Everything outside `src/webgpu/` is suggest-only.** If a change is needed
+  elsewhere (e.g. `src/projects.json`, the workflow, the site build), describe
+  the exact change with a paste-ready snippet and hand it to the owner. The
+  owner performs all such edits and all git actions.
+
+## 1. Running & testing — owner-only
+
+Running a doodle is the **owner's job, not the agent's**. The agent writes
+code; the human runs it, looks at it, and reports back.
+
+- **The agent must not run doodles.** No headless browser, no Playwright, no
+  local server + screenshot. Headless GPU backends (SwiftShader/ANGLE) don't
+  match real hardware and produce misleading results.
+- **Static checks only:** syntax-check JS/JSON, verify the doodle contract
+  (§5), check relative paths and import maps resolve, reason through shader
+  and matrix math by hand. Running `node tools/build-manifest.mjs` is fine —
+  it renders no pixels.
+- **Hand off clearly:** say exactly which `index.html` to open (served over
+  `http(s)`, §11) and what to look for. Iterate from the owner's feedback.
+- **Thumbnails are owner-captured** from the running doodle (§8).
+
+## 2. Goals & philosophy
+
+- **Low friction to start a doodle.** Copy `_template/`, edit the shader,
+  refresh. No build step between an idea and pixels.
+- **Each doodle is self-contained and portable.** A doodle folder runs on its
+  own `index.html`; it never depends on the gallery to work.
+- **Shared plumbing, not shared style.** Boring WebGPU boilerplate (device
+  init, canvas config, render loop, resize, teardown) lives in `lib/`. The
+  creative code stays in the doodle.
+- **The gallery is generated from the doodles, never the reverse.**
+  `manifest.json` is generated by `tools/build-manifest.mjs` from each
+  doodle's `meta`; the gallery page renders itself from the manifest.
+- **Graceful when WebGPU is absent.** Every page detects support and degrades
+  to a readable message or a static image — never a blank canvas or a thrown
+  error.
+
+Scope is deliberately open: fragment visuals, compute particles, cellular
+automata, raymarching, meshes, audio-reactive pieces — anything WebGPU can do.
+
+**Tooling:** vanilla ES modules + import maps, no bundler. The section itself
+has no build step; the *site's* CI minifies `.js` on deploy (§3). If runtime
+WebGPU typos ever become the bottleneck, Vite + TS can be layered on later —
+the doodle contract is designed to survive that migration unchanged.
+
+## 3. Deploy reality
+
+The site does **not** serve the repo root, and there **is** a site-level
+build:
+
+- **Web root is `src/`.** On push to `master`, GitHub Actions runs
+  `node build/build.mjs`: copies `src/ → dist/`, **minifies every `.js` with
+  terser**, generates the landing page from `src/projects.json`, publishes
+  `dist/` to Pages. `dist/` is CI-only, never committed. No local build, no
+  manual deploy.
+- **Real URLs drop the `src/` prefix.** The gallery is
+  `https://missingwires.com/webgpu/`; a doodle is
+  `https://missingwires.com/webgpu/doodles/NNN-slug/`. Locally (served from
+  the repo root) the same files are under `/src/webgpu/…`. **Never hardcode
+  either absolute path** — relative paths resolve correctly in both.
+- **Doodle JS must be minification-safe.** Terser runs `mangle: true` (local
+  variables only; object properties and exported names survive) and
+  `compress`. Don't rely on `Function.name`, on a local identifier surviving
+  verbatim, or on identifier names as data. Only `.js` is minified — `.mjs`
+  under `tools/` is copied untouched; `.wgsl` and `.json` pass through as-is.
+- **Discoverability:** the homepage card comes from `src/projects.json`,
+  which already carries the `webgpu` entry. Any future change there is
+  suggest-only (§0).
+
+## 4. Repository layout
 
 ```
-
-malachai.github.io/              # Full site repo — READ-only context; suggest changes, don't edit
-
-├── index.html                   # Site root — DO NOT edit; suggest a link/redirect instead
-
-├── … other site files …         # DO NOT edit; suggest changes for the owner to apply
-
-└── src/
-
-&#x20;   └── webgl/                    # ← WRITABLE. The doodles root. All work happens here.
-
-&#x20;       ├── index.html            # Gallery landing page
-
-&#x20;       ├── manifest.json         # Generated list of doodles (source for the gallery)
-
-&#x20;       ├── lib/                  # Shared runtime — imported by every doodle
-
-&#x20;       │   ├── gpu.js           # Device/adapter request, canvas configuration, format
-
-&#x20;       │   ├── loop.js          # rAF loop: time, dt, resize, visibility pause
-
-&#x20;       │   ├── support.js       # Feature detection + fallback messaging
-
-&#x20;       │   └── gallery.js       # Card rendering, IntersectionObserver, thumbnail policy
-
-&#x20;       ├── doodles/
-
-&#x20;       │   ├── \_template/        # Copy this to start a new doodle
-
-&#x20;       │   │   ├── index.html
-
-&#x20;       │   │   ├── doodle.js
-
-&#x20;       │   │   └── shader.wgsl
-
-&#x20;       │   ├── 001-color-field/
-
-&#x20;       │   │   ├── index.html
-
-&#x20;       │   │   ├── doodle.js
-
-&#x20;       │   │   ├── shader.wgsl
-
-&#x20;       │   │   └── thumb.png     # Optional static fallback thumbnail
-
-&#x20;       │   └── 002-particle-flow/
-
-&#x20;       │       └── ...
-
-&#x20;       ├── tools/
-
-&#x20;       │   └── build-manifest.mjs # Scans doodles/, regenerates manifest.json
-
-&#x20;       ├── styles.css
-
-&#x20;       └── SPEC.md
-
+src/webgpu/                      ← WRITABLE root. All work happens here.
+├── index.html                   # Gallery landing page (static cards today, §7)
+├── spec.md                      # This file
+├── manifest.json                # Generated by tools/build-manifest.mjs
+├── lib/                         # Shared runtime — imported by every doodle
+│   ├── gpu.js                   # initGPU(), sizeCanvasToDisplay()
+│   ├── loop.js                  # runLoop(): rAF, t/dt, resize, visibility pause
+│   └── support.js               # isWebGPUAvailable(), requestAdapterOrExplain(), renderFallback()
+├── doodles/
+│   ├── _template/               # Copy to start a new doodle (excluded from manifest)
+│   │   ├── index.html
+│   │   ├── doodle.js
+│   │   ├── shader.wgsl
+│   │   └── spec.md
+│   ├── 001-rgb-cube/
+│   │   ├── index.html
+│   │   ├── doodle.js
+│   │   ├── shader.wgsl
+│   │   ├── spec.md              # Per-doodle spec (§10)
+│   │   └── thumb.png            # Optional static thumbnail, owner-captured (§8)
+│   └── 002-yarn-pillow/
+│       └── …
+└── tools/
+    └── build-manifest.mjs       # Scans doodles/, regenerates manifest.json
 ```
 
+**Naming:** doodle folders are `NNN-kebab-slug`, zero-padded, chronological.
+The slug becomes the permalink — don't rename after publishing.
 
+## 5. The doodle contract
 
-> \*\*Discoverability from the rest of the site\*\* (linking the gallery into the site's nav, adding it to a root index or sitemap) lives \*outside\* `src/webgl/` and is therefore \*\*suggest-only\*\* — propose the edit with a paste-ready snippet and let the owner apply it (§0).
-
-
-
-\### Naming
-
-
-
-\- Doodle folders are `NNN-kebab-slug` where `NNN` is a zero-padded sequence number (`001`, `002`, …). Numbers give a stable chronological ordering and readable URLs.
-
-\- The slug is short, lowercase, hyphenated, and stable — it becomes the permalink, so avoid renaming after publishing.
-
-
-
-\### URLs (GitHub Pages, user site)
-
-
-
-`malachai.github.io` is a \*\*user site\*\*, so Pages serves from the repo root at `https://malachai.github.io/`. The doodles therefore live under `https://malachai.github.io/src/webgl/`, and a doodle is `…/src/webgl/doodles/001-color-field/`. All references must be \*\*relative\*\* (`../../lib/gpu.js`, not `/src/webgl/lib/gpu.js` and never a bare `/lib/gpu.js`) so a doodle resolves correctly whether opened standalone, served from `/src/webgl/…`, or later moved. See §7 on the import-map base-path detail.
-
-
-
-\---
-
-
-
-\## 4. The doodle contract
-
-
-
-A doodle is an ES module (`doodle.js`) with a \*\*default export\*\* implementing the interface below. The shared runtime constructs the device and canvas, then hands them to the doodle; the doodle returns per-frame and lifecycle callbacks. This is the single most important part of the spec — conform to it and everything else (standalone run, gallery embedding, live thumbnails, teardown) works for free.
-
-
+A doodle is an **inert ES module** — `doodle.js` default-exports an object;
+loading it runs nothing, and its module scope must be environment-free (no
+top-level DOM/`navigator` access) so tooling can import it in Node. The
+per-doodle `index.html` bootstrap (§6) drives support-check → device →
+`init` → `runLoop`.
 
 ```js
-
-// doodles/001-color-field/doodle.js
-
 export default {
+  meta: {
+    title: "Color Field",
+    description: "One-liner used by the gallery card.",
+    tags: ["fragment", "noise"],
+    created: "2026-07-09",
+    prefersReducedMotionSafe: false, // if true, keeps animating under reduced-motion
+  },
 
-&#x20; meta: {
-
-&#x20;   title: "Color Field",
-
-&#x20;   description: "A drifting gradient driven by simplex noise in a fragment shader.",
-
-&#x20;   tags: \["fragment", "noise", "generative"],
-
-&#x20;   created: "2026-07-09",
-
-&#x20;   // Optional hints the runtime respects:
-
-&#x20;   prefersReducedMotionSafe: false, // if true, keeps animating under reduced-motion
-
-&#x20;   thumbnail: "thumb.png"           // static fallback for the gallery (optional)
-
-&#x20; },
-
-
-
-&#x20; /\*\*
-
-&#x20;  \* Called once after the device + canvas are ready.
-
-&#x20;  \* @param {DoodleContext} ctx
-
-&#x20;  \* @returns {DoodleInstance}
-
-&#x20;  \*/
-
-&#x20; async init(ctx) {
-
-&#x20;   const { device, context, canvas, format, loadWGSL } = ctx;
-
-
-
-&#x20;   const module = device.createShaderModule({ code: await loadWGSL("./shader.wgsl") });
-
-&#x20;   // ... create pipeline, buffers, bind groups ...
-
-
-
-&#x20;   return {
-
-&#x20;     // Called every animation frame. `t` seconds since start, `dt` seconds since last frame.
-
-&#x20;     frame({ t, dt, frameIndex }) {
-
-&#x20;       // encode + submit a command buffer for this frame
-
-&#x20;     },
-
-&#x20;     // Called on canvas resize (after the runtime reconfigures the context).
-
-&#x20;     resize({ width, height, dpr }) {
-
-&#x20;       // recreate size-dependent resources (depth textures, etc.)
-
-&#x20;     },
-
-&#x20;     // Called when the doodle is torn down (navigating away, or gallery card scrolled off).
-
-&#x20;     // MUST release GPU resources it created: buffers, textures, pipelines it owns.
-
-&#x20;     destroy() {}
-
-&#x20;   };
-
-&#x20; }
-
+  async init(ctx) {
+    const { device, context, canvas, format, loadWGSL } = ctx;
+    const module = device.createShaderModule({ code: await loadWGSL("./shader.wgsl") });
+    // … pipelines, buffers, bind groups …
+    return {
+      frame({ t, dt, frameIndex }) { /* encode + submit one frame */ },
+      resize({ width, height, dpr }) { /* recreate size-dependent resources */ },
+      destroy() { /* release everything init created */ },
+    };
+  },
 };
-
 ```
 
-
-
-\### `DoodleContext` (passed to `init`)
-
-
-
-| Field | Type | Notes |
-
-|---|---|---|
-
-| `device` | `GPUDevice` | Already requested by the runtime, with sensible limits. |
-
-| `adapter` | `GPUAdapter` | For querying features/limits. |
-
-| `context` | `GPUCanvasContext` | Already `configure()`d with `format` and `alphaMode: "premultiplied"`. |
-
-| `canvas` | `HTMLCanvasElement` | The target canvas. |
-
-| `format` | `GPUTextureFormat` | From `navigator.gpu.getPreferredCanvasFormat()`. |
-
-| `loadWGSL` | `(url) => Promise<string>` | Fetches WGSL relative to the doodle module. |
-
-| `mode` | `"standalone" \\| "gallery"` | Lets a doodle scale down work for thumbnail embedding. |
-
-| `quality` | `number` | 0–1 hint; the gallery passes a low value for live thumbnails. |
-
-
-
-\### `DoodleInstance` (returned by `init`)
-
-
-
-\- `frame({ t, dt, frameIndex })` — \*\*required.\*\* Encode and submit one frame. Do not call `requestAnimationFrame` yourself; the runtime owns the loop.
-
-\- `resize({ width, height, dpr })` — optional. Recreate size-dependent resources. The runtime handles canvas sizing and context reconfiguration before calling this.
-
-\- `destroy()` — \*\*required if the doodle allocates GPU resources.\*\* Must free everything it created so gallery cards can mount/unmount repeatedly without leaking.
-
-
-
-\### Rules
-
-
-
-1\. \*\*The doodle never owns the animation loop, device request, or canvas sizing.\*\* Those belong to the runtime so that the gallery can pause, throttle, and tear down uniformly.
-
-2\. \*\*The doodle never assumes it is fullscreen or the only thing on the page.\*\* In `gallery` mode it may be a 240×160 card among dozens.
-
-3\. \*\*All resources created in `init` are released in `destroy`.\*\* No orphaned textures.
-
-4\. \*\*No global state that survives teardown.\*\* Two instances of the same doodle (standalone tab + gallery card) must not collide.
-
-
-
-\---
-
-
-
-\## 5. Shared runtime (`lib/`)
-
-
-
-Small, dependency-free ES modules. JSDoc-typed, `// @ts-check`-friendly.
-
-
-
-\### `lib/support.js`
-
-\- `isWebGPUAvailable()` → boolean (`"gpu" in navigator` and an adapter is obtainable).
-
-\- `requestAdapterOrExplain()` → `{ adapter }` or throws a typed `WebGPUUnsupportedError` carrying a human message ("WebGPU isn't available in this browser…").
-
-\- `renderFallback(container, { reason, thumbnail })` — replaces the canvas with a static thumbnail (if provided) plus a short, friendly explanation and a link to enable/upgrade.
-
-
-
-\### `lib/gpu.js`
-
-\- `initGPU(canvas, { requiredFeatures, requiredLimits })` → `{ adapter, device, context, format }`. Requests the adapter/device, configures the context with the preferred format and `alphaMode: "premultiplied"`, and wires `device.lost` handling (surfaces a fallback rather than dying silently).
-
-\- `sizeCanvasToDisplay(canvas, dpr)` → `{ width, height }`, clamped to `device.limits.maxTextureDimension2D`.
-
-
-
-\### `lib/loop.js`
-
-\- `runLoop(instance, { canvas, context, device, targetFPS })` — owns `requestAnimationFrame`, computes `t`/`dt`/`frameIndex`, observes resize (`ResizeObserver`) and reconfigures the context + calls `instance.resize`, and \*\*pauses when the page/canvas is not visible\*\* (`document.hidden` and `IntersectionObserver`) to save the GPU. Returns a handle with `pause()`, `resume()`, and `stop()` (which calls `instance.destroy`).
-
-\- Respects `prefers-reduced-motion`: if set and the doodle is not `prefersReducedMotionSafe`, renders a single frame and holds, rather than animating.
-
-
-
-\### `lib/gallery.js`
-
-\- Reads `manifest.json`, builds a card grid, and manages the \*\*live-thumbnail policy\*\* (see §6).
-
-
-
-Everything in `lib/` is imported by doodles and the gallery via the import map (§7).
-
-
-
-\---
-
-
-
-\## 6. Gallery \& live thumbnails
-
-
-
-The landing `index.html` renders a responsive card grid from `manifest.json`. Each card links to the standalone doodle and shows a \*\*live\*\* preview — a real WebGPU canvas running the doodle at reduced quality — but only when it makes sense to do so. Running dozens of WebGPU contexts at once will melt a laptop, so the policy is strict:
-
-
-
-\### Live-thumbnail policy
-
-
-
-1\. \*\*Lazy mount via `IntersectionObserver`.\*\* A card's canvas is only initialized when it scrolls into view, and torn down (`instance.destroy()` + context unconfigure) when it scrolls well out of view.
-
-2\. \*\*Concurrency cap.\*\* At most `N` live canvases run simultaneously (default `N = 6`, tuned down on low-end devices via `navigator.hardwareConcurrency` / `deviceMemory` heuristics). Beyond the cap, cards show their static `thumb.png` until a slot frees.
-
-3\. \*\*Reduced quality.\*\* The gallery passes `mode: "gallery"` and a low `quality` value; the runtime caps DPR at 1 and the canvas at thumbnail resolution.
-
-4\. \*\*Static fallback first.\*\* Each card renders its `thumb.png` immediately (fast paint), then upgrades to live if a slot is available. If WebGPU is unavailable, the static thumbnail simply stays.
-
-5\. \*\*Respect `prefers-reduced-motion`.\*\* Under reduced motion, the gallery shows static thumbnails only — no live canvases — unless the user opts in with a toggle.
-
-6\. \*\*Pause when the tab is hidden.\*\* All live cards pause on `document.hidden`.
-
-
-
-\### Static thumbnails
-
-
-
-`thumb.png` is optional but recommended (fast first paint, and the only preview on unsupported clients). Capture it from the standalone doodle with a "📸 Save thumbnail" affordance the runtime injects in `standalone` mode (calls `canvas.toBlob`), or via the `tools/` script. Commit it into the doodle folder. Target \~480×320, < 60 KB.
-
-
-
-\---
-
-
-
-\## 7. Import maps \& the base-path detail
-
-
-
-Each `index.html` (gallery and every doodle) declares an import map so bare specifiers resolve to the shared lib:
-
-
-
-```html
-
-<script type="importmap">
-
-{
-
-&#x20; "imports": {
-
-&#x20;   "doodle-lib/": "../../lib/"
-
-&#x20; }
-
-}
-
-</script>
-
-<script type="module" src="./doodle.js"></script>
-
-```
-
-
-
-\- Use \*\*relative\*\* map targets (`../../lib/` from a doodle, `./lib/` from the gallery). Relative targets resolve correctly whether a doodle folder is opened on its own or served under `/src/webgl/…` on the live site — no hardcoded absolute `/lib/` or `/src/webgl/lib/` that would break if opened standalone or if the subtree ever moves.
-
-\- Pin any third-party ESM (e.g. a math or noise helper) in the same map by full URL so there is still no build and versions are explicit.
-
-\- Doodles import shared code as `import { initGPU } from "doodle-lib/gpu.js"`.
-
-
-
-\---
-
-
-
-\## 8. WGSL conventions
-
-
-
-\- Shaders live beside the doodle as `.wgsl` and are fetched via `ctx.loadWGSL`, or inlined as template strings for tiny shaders. Prefer separate files once a shader is more than a few lines — editors syntax-highlight `.wgsl` and diffs stay clean.
-
-\- A shared uniform block convention keeps the plumbing uniform. Reserve `group(0) binding(0)` for a standard `Globals` uniform the runtime can fill:
-
-
-
-&#x20; ```wgsl
-
-&#x20; struct Globals {
-
-&#x20;   resolution : vec2f,
-
-&#x20;   time       : f32,
-
-&#x20;   dt         : f32,
-
-&#x20;   frame      : u32,
-
-&#x20; };
-
-&#x20; @group(0) @binding(0) var<uniform> globals : Globals;
-
-&#x20; ```
-
-
-
-&#x20; Doodles may add their own bind groups at `group(1)+`.
-
-\- Keep entry points named `vs\_main` / `fs\_main` / `cs\_main` for readability.
-
-\- Guard optional features (e.g. `timestamp-query`, `f16`) behind `requiredFeatures` and check `adapter.features` — never assume.
-
-
-
-\---
-
-
-
-\## 9. Performance \& resource discipline
-
-
-
-\- \*\*One device per page context;\*\* don't request a new adapter per frame.
-
-\- \*\*Free what you allocate.\*\* `destroy()` must release buffers/textures/pipelines the doodle created. The runtime destroys the device on full teardown.
-
-\- \*\*Pause offscreen and hidden.\*\* Handled by the runtime, but don't defeat it by spawning your own `rAF`.
-
-\- \*\*Clamp sizes\*\* to `device.limits.maxTextureDimension2D` and cap DPR (2 is plenty; the gallery uses 1).
-
-\- \*\*Budget the gallery\*\*: static-first paint, capped concurrency, reduced quality. A cold gallery load should not spike the GPU.
-
-
-
-\---
-
-
-
-\## 10. Accessibility \& UX baseline
-
-
-
-\- Honor `prefers-reduced-motion` (§5, §6).
-
-\- Every doodle page has a visible title, a one-line description, and a "back to gallery" link.
-
-\- Provide a pause/play control in standalone mode (the runtime can inject a minimal one).
-
-\- Ensure the fallback message is real text (screen-reader accessible), not baked into an image.
-
-\- Canvas has an `aria-label` describing the piece.
-
-
-
-\---
-
-
-
-\## 11. Adding a new doodle — checklist
-
-
-
-0\. All paths below are relative to `src/webgl/` — the writable root. Do not touch anything outside it (§0).
-
-1\. `cp -r doodles/\_template doodles/00N-my-slug`.
-
-2\. Edit `doodle.js`: fill in `meta`, write `init` returning `frame`/`resize`/`destroy`.
-
-3\. Write `shader.wgsl` (or inline).
-
-4\. Open `doodles/00N-my-slug/index.html` with any static server (`python3 -m http.server`, `npx serve`) — \*\*not\*\* `file://`, because ES module fetch and WebGPU need `http(s)`.
-
-5\. Iterate until it looks right. Capture `thumb.png`.
-
-6\. Run `node tools/build-manifest.mjs` to regenerate `manifest.json`.
-
-7\. Commit the folder + updated manifest. (You handle git/deploy.)
-
-8\. Confirm it appears in the local gallery and that the standalone page still runs in isolation.
-
-
-
-\---
-
-
-
-\## 12. Definition of done (quality bar per doodle)
-
-
-
-\- Runs standalone from its own folder over `http(s)`.
-
-\- Appears in the gallery with a working live thumbnail (or static fallback).
-
-\- Cleanly mounts/unmounts in the gallery with no console errors and no leaked GPU resources across repeated scroll in/out.
-
-\- Shows the friendly fallback (not a blank canvas or thrown error) when WebGPU is unavailable.
-
-\- Respects reduced-motion and pauses when hidden.
-
-\- No hardcoded absolute paths; runs correctly when served from `/src/webgl/…` on the live site and when opened standalone.
-
-\- No files were modified outside `src/webgl/`; any needed changes elsewhere were written up as suggestions for the owner (§0).
-
-
-
-\---
-
-
-
-\## 13. Open questions / future upgrades
-
-
-
-\- \*\*Type safety:\*\* if runtime WebGPU typos become annoying, adopt Option B (Vite + TS) — the doodle contract is designed to survive that migration unchanged.
-
-\- \*\*Auto thumbnails:\*\* a headless capture (Playwright + the pre-installed Chromium) could regenerate every `thumb.png` on demand instead of manual capture.
-
-\- \*\*Tags \& filtering:\*\* the manifest already carries `tags`; a filter UI in the gallery is a natural next step.
-
-\- \*\*Shared shader includes:\*\* a tiny WGSL `#include`-style preprocessor in `loadWGSL` for reusing noise/hash functions across doodles.
-
-
-
-\---
-
-
-
-\## 14. Running \& testing — owner-only
-
-
-
-Running a doodle is the \*\*owner's job, not the agent's\*\*. The collaborator writes the code; the human runs it, looks at it, and reports back. This is a hard rule, on par with the write boundary in §0.
-
-
-
-\- \*\*The agent must not run doodles itself.\*\* No headless browser, no Playwright/Puppeteer, no spinning up a local server to screenshot the canvas, no automated WebGPU capture. Even though a headless Chromium may be available in the environment, it is \*\*off-limits\*\* for verifying doodles — headless GPU backends (SwiftShader/ANGLE) don't match real hardware and produce misleading results (a blank or "device lost" canvas that says nothing about how the doodle behaves for the owner).
-
-\- \*\*Static checks only.\*\* The verification the agent may do is limited to things that don't render pixels: syntax-checking JS/JSON, confirming files conform to the doodle contract (§4), checking that relative paths and import maps resolve, and reasoning through the shader and matrix math by hand.
-
-\- \*\*Hand off clearly.\*\* When a doodle is ready, tell the owner exactly what to run (which `index.html`, served over `http(s)` per §11.4) and what to look for, so they can confirm or report back. Iterate from their feedback — never from self-run screenshots.
-
-\- \*\*Thumbnails are owner-captured.\*\* `thumb.png` (§6) is captured by the owner from the running doodle. The agent does not attempt to auto-generate it by rendering. \*This supersedes the "auto thumbnails via headless capture" idea floated in §13.\*
-
-
-
-This keeps the loop honest: visual judgement, "does it look right," and real-hardware GPU behaviour all live with the human.
-
-
-
-\### 14.1 Serving locally
-
-
-
-\- Doodles need `http(s)`, not `file://` (ES-module fetch and WebGPU both require it). From the \*\*repository root\*\* (not `src/webgl/`): `python -m http.server`, then open `http://localhost:8000/src/webgl/doodles/NNN-slug/`. Serving from the repo root keeps the relative import-map target (`../../lib/`) resolving the same way it will on the live site.
-
-\- Harmless `404`s you can ignore: `GET /favicon.ico` and `GET /.well-known/appspecific/com.chrome.devtools.json`. The browser and its devtools request these on their own; they are unrelated to the doodle.
-
-
-
-\### 14.2 "No available adapters" / the WebGPU fallback fires
-
-
-
-If a doodle shows the friendly fallback message and the console logs `No available adapters` — meaning the WebGPU API exists (`"gpu" in navigator` is true) but `navigator.gpu.requestAdapter()` returned `null` — the browser can't reach a GPU. The doodle is behaving correctly (§5: a readable fallback, not a blank canvas); the fix is environmental. Check, in order:
-
-
-
-1\. Open `chrome://gpu`. The \*\*WebGPU\*\* line should read "Hardware accelerated." If it says disabled or software-only, that's the cause.
-
-2\. Turn on hardware acceleration: Chrome/Edge → Settings → System → \*\*"Use graphics acceleration when available"\*\* → then fully quit and restart the browser (not just the tab).
-
-3\. Still failing? Enable `chrome://flags/#enable-unsafe-webgpu` (set to Enabled), and on Linux also `chrome://flags/#enable-vulkan`; restart.
-
-4\. Confirm the browser is recent enough — WebGPU shipped in Chrome/Edge 113+. Safari and Firefox have since shipped it too, but coverage varies by version and platform.
-
-5\. Remote/VM/RDP or otherwise headless sessions frequently expose no GPU adapter at all. Test on a machine with a real display and GPU.
-
-
-
-A quick way to confirm the browser itself is capable, independent of any doodle: run `await navigator.gpu?.requestAdapter()` in the devtools console — `null` reproduces the problem outside the doodle code.
-
-
-
-\---
-
-
-
-\## 15. Deploy reality (corrects §2, §3, §7)
-
-
-
-The surrounding `missingwires.com` site does \*\*not\*\* serve the repo root as-is, and there \*\*is\*\* a build step. This section documents what actually happens and supersedes the "no build step / served from repo root at `/src/webgl/…`" assumptions in §2–§3 and §7.
-
-
-
-\### How the site builds \& deploys
-
-\- \*\*Web root is `src/`\*\*, not the repository root. The `CNAME` (`missingwires.com`) lives at `src/CNAME`.
-
-\- On push to `master`, GitHub Actions (`.github/workflows/deploy.yml`) runs `node build/build.mjs`, which: cleans `dist/`, copies `src/ → dist/`, \*\*minifies every `.js` in place with terser\*\*, generates `dist/index.html` (the landing page) from `src/projects.json`, writes `.nojekyll`, and publishes `dist/` to Pages. `dist/` is git-ignored and CI-only — never committed.
-
-\- There is no local build to run and no manual deploy: the owner commits `src/…` and pushes; CI does the rest.
-
-
-
-\### What this means for doodles
-
-\- \*\*Real URLs drop the `src/` prefix.\*\* A doodle is served at `https://missingwires.com/webgl/doodles/NNN-slug/`, and the doodles section landing is `https://missingwires.com/webgl/`. There is no `/src/` in any production URL. (Locally, served from the repo root, the same files are under `/src/webgl/…` — so keep testing at that local path per §14.1, but link production-facing copy to `/webgl/…`.)
-
-\- \*\*Relative paths still resolve correctly\*\* either way: the import-map target `../../lib/` from a doodle resolves to `/webgl/lib/` in production and `/src/webgl/lib/` locally. Never hardcode an absolute `/src/webgl/…` or `/webgl/…` path — relative keeps both working (this half of §7 stands).
-
-\- \*\*Doodle JS must be minification-safe.\*\* Terser runs with `mangle: true` (local variables only — object properties and top-level/exported names are preserved by the current config) and `compress`. Don't write code whose behaviour depends on `Function.name`, on a specific local variable name, or on top-level identifiers surviving verbatim. Standard doodle code is fine; just don't rely on identifier names as data. (Note: only files ending `.js` are minified — a `.mjs` tool under `tools/` is copied but not minified.)
-
-
-
-\### Discoverability is suggest-only (per §0)
-
-\- The homepage card grid is generated from `src/projects.json`. Making the doodles section appear on `missingwires.com` means adding one project entry (`"slug": "webgl"`) to that file. `src/projects.json` is \*\*outside `src/webgl/`\*\*, so the agent \*\*proposes\*\* the entry (paste-ready) and the owner applies it — the agent never edits it. Once present, the card links to `/webgl/`, which is served by `src/webgl/index.html` (inside the boundary).
-
-\- The section landing (`src/webgl/index.html`) is the doodles gallery; individual doodles link back to it via `../../index.html` (→ `/webgl/`), and it links back to the site root via `/`.
-
-
-
-\---
-
-
-
-\## 16. Corrections \& clarifications from doodle 001
-
-\*Building the first doodle shook these out. They amend the sections named; a later consolidation pass can fold them back inline.\*
-
-
-
-\### 16.1 The standalone bootstrap (amends §7)
-
-
-
-A doodle is an \*\*inert default-export object\*\* — loading `doodle.js` does not run anything. Each doodle's `index.html` therefore carries a small inline bootstrap that drives support-check → device → `doodle.init` → `runLoop`. §7's `<script type="module" src="./doodle.js">` line was misleading; the real shape `_template/index.html` should carry is:
-
-
-
-```html
-<script type="importmap">
-{ "imports": { "doodle-lib/": "../../lib/" } }
-</script>
-
-<script type="module">
-  import doodle from "./doodle.js";
-  import { isWebGPUAvailable, renderFallback } from "doodle-lib/support.js";
-  import { initGPU } from "doodle-lib/gpu.js";
-  import { runLoop } from "doodle-lib/loop.js";
-
-  const canvas = document.getElementById("c");
-  const stage  = document.getElementById("stage");
-
-  // Fetch WGSL relative to this page (the doodle folder).
-  const loadWGSL = (url) =>
-    fetch(new URL(url, import.meta.url)).then((r) => {
-      if (!r.ok) throw new Error(`Failed to load ${url}: HTTP ${r.status}`);
-      return r.text();
-    });
-
-  (async () => {
-    if (!isWebGPUAvailable()) {
-      renderFallback(stage, { reason: "no-webgpu", thumbnail: doodle.meta.thumbnail });
-      return;
-    }
-    try {
-      const { adapter, device, context, format } = await initGPU(canvas);
-      const instance = await doodle.init({
-        device, adapter, context, canvas, format, loadWGSL,
-        mode: "standalone", quality: 1,
-      });
-      runLoop(instance, { canvas, context, device });   // handle exposes pause()/resume()/stop()
-    } catch (err) {
-      console.error(err);
-      renderFallback(stage, { reason: String(err?.message || err), thumbnail: doodle.meta.thumbnail });
-    }
-  })();
-</script>
-```
-
-
-
-The bootstrap stays \*\*inline per doodle\*\* (not a shared `lib/standalone.js`) so a doodle folder runs with zero shared assumptions beyond `lib/`. `loadWGSL` is defined here and passed into `ctx`; `import.meta.url` resolves WGSL against the doodle folder. A pause/play button (§10) is optional and wires to the `runLoop` handle.
-
-
-
-\### 16.2 `group(0) binding(0)` belongs to the doodle (amends §8)
-
-
-
-\*\*Decision: doodles own `group(0) binding(0)`; the runtime does not fill a `Globals` uniform.\*\* Filling a shared `Globals` would force a runtime-owned buffer into every pipeline's bind group, which collides with doodles building their own bind groups. So:
-
-
-
-\- The runtime passes per-frame values to `frame({ t, dt, frameIndex })`. If a doodle wants them on the GPU, it declares \*\*its own\*\* uniform at `group(0) binding(0)` and writes them itself each frame.
-
-\- The `Globals` struct in §8 is a \*\*recommended layout to copy\*\*, not something the runtime provides. A doodle that needs no globals (like 001, which uploads only an MVP matrix) just puts whatever it wants at that binding.
-
-\- Doodles remain free to add more bind groups at `group(1)+`.
-
-
-
-\### 16.3 Cold start / bootstrapping
-
-
-
-The very first doodle in a fresh tree also brings up the minimum shared runtime it needs (`lib/support.js`, `lib/gpu.js`, `lib/loop.js`). Don't assume `lib/`, `_template/`, `gallery.js`, `manifest.json`, or `tools/` already exist — build the smallest slice the current doodle requires and leave the rest for later increments.
-
-
-
-\### 16.4 Current state vs. target
-
-
-
-\- \*\*Live-thumbnail gallery (§6) is the target, not the current build.\*\* The section landing (`src/webgl/index.html`) currently renders \*\*static\*\* cards (a gradient thumb + link) from `manifest.json`. The `IntersectionObserver` / concurrency-cap / reduced-quality live-canvas policy and `lib/gallery.js` are not built yet.
-
-\- \*\*`tools/build-manifest.mjs` (§11 step 6) does not exist yet.\*\* `manifest.json` is hand-maintained until it does — add a `{ slug, path, title, description, tags, created, thumbnail }` entry per doodle.
-
-
-
-\### 16.5 Filename
-
-
-
-This file is \*\*`spec.md`\*\* (lowercase). References to `SPEC.md` in §3's tree and in the companion system prompt mean this same file; on case-sensitive hosts (Linux/CI) the casing matters, so prefer `spec.md`.
-
-
-\---
-
-\## 17. Corrections \& clarifications from doodle 002
-
-\*Building the second doodle — a single yarn strand tracing a Hilbert curve over an invisible pillow, with live shape and strand controls — shook these out. They amend the sections named.\*
-
-\### 17.1 Depth buffer for self-occluding geometry (amends §4, §9)
-
-Doodle 001 avoided a depth buffer with a two-pass convex trick. Any opaque geometry that occludes itself — a tube, a mesh, particles drawn as quads — needs a real depth attachment instead.
-
-\- Create the depth texture lazily and recreate it in `resize({ width, height })`; it is the one size-dependent resource most doodles need. Destroy the old texture before creating the new one, and destroy the last in `destroy()`.
-
-\- Give the pipeline `depthStencil: { format: "depth24plus", depthWriteEnabled: true, depthCompare: "less" }`, and the render pass a `depthStencilAttachment` cleared to 1.0.
-
-\- The runtime applies a pending resize before the first `frame`, so `resize` runs first in practice — but still lazy-create the depth texture in `frame` as a guard, so the doodle is robust if it ever renders before a resize.
-
-\### 17.2 Uniform layout \& alignment (amends §8)
-
-Std140-style alignment bites as soon as a doodle uploads more than one matrix. Keep it mechanical:
-
-\- A `mat4x4<f32>` is 64 bytes; bundle loose scalars into `vec4<f32>` param slots (e.g. `p0 = (time, totalLen, flowSpeed, count)`) rather than many lone `f32`s, and keep the total uniform size a multiple of 16.
-
-\- A `vec3<f32>` still consumes 16 bytes of alignment — prefer `vec4` and ignore `.w`, or pack it on purpose.
-
-\- Per-frame values and rarely-changing data (a colour seed, a palette) can share one buffer; write sub-ranges independently with `queue.writeBuffer(ubuf, offset, data)`.
-
-\### 17.3 Doodles may expose extra methods for on-page controls (amends §4)
-
-The `DoodleInstance` contract — `frame` / `resize` / `destroy` — is the \*minimum\*, not the whole surface. A doodle may return additional methods (002 adds `setShape`, `getShape`, `setStrandCount`, `setCoverage`, `shuffleColors`) and its standalone `index.html` may own UI (sliders, buttons) that calls them. This stays within the spec:
-
-\- The runtime only ever calls `frame` / `resize` / `destroy`; any extra methods are ignored by it.
-
-\- Gallery mode never wires the controls, so the doodle still renders at its defaults — the doodle-never-assumes-it-owns-the-page rule (§4) holds.
-
-\- Keep control state in the instance closure (no globals, §4), and fold any expensive rebuild into the next `frame` behind a dirty flag, so slider drags coalesce to one rebuild per frame instead of thrashing the GPU.
-
-\- Performance note: if a control changes only vertex \*positions\* (not counts or topology), rebuild by recomputing the vertex array and re-uploading it to the same buffer — no pipeline or buffer recreation, and the index buffer is untouched.
-
-\### 17.4 Cache-busting during iteration (amends §14.1)
-
-A fast edit loop has a stale-module trap: the browser serves a freshly-edited `index.html` but a cached `doodle.js` or `shader.wgsl`, so the new HTML calls a method the old module lacks (it surfaces as, e.g., `instance.setCoverage is not a function`). Two fixes:
-
-\- Hard-reload (Ctrl/Cmd-Shift-R) after edits, or
-
-\- Have `index.html` append a per-load cache-buster to the files it owns: `const BUST = "?ts=" + Date.now();`, then `import("./doodle.js" + BUST)` and `fetch(url + BUST)` for WGSL. Shared `lib/` imports rarely change and don't need it.
-
-\- This refetches those two files on every load — ideal while iterating; drop or gate it if you later want production caching of a doodle's own JS. Using a dynamic `import()` also means the bootstrap loads `doodle.js` inside its async IIFE rather than as a top-level `import`.
-
-\### 17.5 Current state
-
-Two doodles now exist: `001-rgb-cube` and `002-yarn-pillow`. `manifest.json` carries both and is still hand-maintained (§16.4). `lib/gallery.js`, `tools/build-manifest.mjs`, `doodles/_template/`, and the live-thumbnail policy (§6) remain unbuilt, and neither doodle has a committed `thumb.png` yet (owner-captured, §14).
+**`DoodleContext` (passed to `init`):** `device`, `adapter`, `context`
+(already configured, `alphaMode: "premultiplied"`), `canvas`, `format`
+(preferred canvas format), `loadWGSL(url)` (fetches WGSL relative to the
+doodle folder), `mode` (`"standalone" | "gallery"`), `quality` (0–1 hint;
+the gallery will pass a low value).
+
+**`DoodleInstance` (returned by `init`):**
+
+- `frame({ t, dt, frameIndex })` — **required.** Never call
+  `requestAnimationFrame` yourself; the runtime owns the loop.
+- `resize({ width, height, dpr })` — optional. The runtime sizes the canvas
+  first, then calls this. It also applies a pending resize before the first
+  `frame`, so `resize` runs first in practice — but lazy-create
+  size-dependent resources in `frame` as a guard anyway.
+- `destroy()` — **required if the doodle allocates GPU resources.** Gallery
+  cards must mount/unmount repeatedly without leaking.
+- **Extra methods are allowed.** A doodle may expose more (e.g. 002's
+  `setShape`/`setStrandCount`/`shuffleColors`) for its own standalone UI. The
+  runtime only ever calls `frame`/`resize`/`destroy`; gallery mode never
+  wires controls, so the doodle must render fine at its defaults. Keep
+  control state in the instance closure and fold expensive rebuilds into the
+  next `frame` behind a dirty flag so slider drags coalesce.
+
+**Rules:**
+
+1. The doodle never owns the loop, device request, or canvas sizing.
+2. The doodle never assumes it's fullscreen or alone on the page — in
+   gallery mode it may be a small card among dozens.
+3. Everything created in `init` is released in `destroy`.
+4. No global state that survives teardown; two instances must not collide.
+
+## 6. The standalone bootstrap
+
+Each doodle's `index.html` carries a small inline bootstrap (kept inline, not
+a shared `lib/standalone.js`, so a folder runs with zero assumptions beyond
+`lib/`). See `_template/index.html` for the canonical version. Key points:
+
+- An import map maps `doodle-lib/` → `../../lib/`. **Relative targets only**
+  — they resolve both locally (`/src/webgpu/…`) and in production
+  (`/webgpu/…`).
+- **Cache-busting while iterating:** the bootstrap appends
+  `const BUST = "?ts=" + Date.now()` to the two frequently-edited files —
+  `import("./doodle.js" + BUST)` and `fetch(wgslUrl + BUST)` — so a refresh
+  never mixes new HTML with stale cached modules (the classic symptom:
+  `instance.someNewMethod is not a function`). Shared `lib/` imports don't
+  need it. Drop or gate the buster if production caching ever matters.
+- The bootstrap support-checks, calls `initGPU`, passes
+  `mode: "standalone", quality: 1`, hands the instance to `runLoop`, wires a
+  pause/play button to the returned handle, and routes any failure to
+  `renderFallback` — never a blank canvas.
+
+## 7. Gallery
+
+**Current build:** `index.html` fetches `manifest.json` and renders static
+cards (thumbnail image if the doodle has one, otherwise a gradient) linking
+to each doodle. It shows a friendly banner when WebGPU is unavailable.
+
+**Target (not built yet):** live thumbnails — each card runs the real doodle
+at reduced quality under a strict policy: lazy mount via
+`IntersectionObserver`, teardown when scrolled well away, a concurrency cap
+(~6, tuned down via `hardwareConcurrency`/`deviceMemory`), DPR capped at 1,
+`mode: "gallery"` with low `quality`, static-thumb-first paint, static-only
+under `prefers-reduced-motion`, all cards pause on `document.hidden`. This
+lands as `lib/gallery.js` when built.
+
+## 8. Static thumbnails
+
+`thumb.png` is optional but recommended — fast first paint and the only
+preview on unsupported clients. **Owner-captured** from the running doodle
+(right-click → save, or `canvas.toBlob` in the console); the agent never
+generates one by rendering. Commit it into the doodle folder; target
+~480×320, < 60 KB. `tools/build-manifest.mjs` picks it up automatically.
+
+## 9. WGSL conventions
+
+- Shaders live beside the doodle as `.wgsl`, fetched via `ctx.loadWGSL`.
+  Inline template strings are fine for a few lines; prefer files once bigger
+  (highlighting, clean diffs).
+- **The doodle owns `group(0) binding(0)`.** The runtime does not fill any
+  uniform; per-frame values arrive via `frame({ t, dt, frameIndex })` and the
+  doodle writes whatever it wants to the GPU itself. The layout below is a
+  recommended starting point, not something the runtime provides:
+
+  ```wgsl
+  struct Globals {
+    resolution : vec2f,
+    time       : f32,
+    dt         : f32,
+  };
+  @group(0) @binding(0) var<uniform> globals : Globals;
+  ```
+
+- **Uniform alignment is mechanical — keep it that way.** A `mat4x4<f32>` is
+  64 bytes; bundle loose scalars into `vec4<f32>` param slots rather than
+  lone `f32`s; a `vec3<f32>` still consumes 16 bytes, so prefer `vec4` and
+  ignore `.w`; keep total size a multiple of 16. Per-frame and rarely-changed
+  data can share one buffer — write sub-ranges with
+  `queue.writeBuffer(ubuf, offset, data)`.
+- Entry points: `vs_main` / `fs_main` / `cs_main`.
+- Guard optional features (`timestamp-query`, `f16`) behind
+  `requiredFeatures` and check `adapter.features` — never assume.
+
+## 10. Per-doodle specs
+
+Every doodle folder carries a `spec.md` (template in `_template/spec.md`)
+covering: **intent** (what it should look/feel like), **how it works**
+(technique, geometry, shader approach), **control surface** (extra instance
+methods + the standalone UI that drives them), **implementation notes**
+(gotchas, perf decisions, alignment traps hit), and **ideas** for later.
+
+Division of labour: *this* spec owns the contract, runtime, layout, deploy
+and workflow; a doodle's spec owns everything specific to that doodle. When
+building a doodle teaches a general lesson, fold it into the relevant section
+here; when it's doodle-specific, it goes in the doodle's spec.
+
+## 11. Common patterns & gotchas
+
+- **Depth buffer for self-occluding geometry.** Anything opaque that occludes
+  itself (tubes, meshes, particle quads) needs a real depth attachment:
+  `depthStencil: { format: "depth24plus", depthWriteEnabled: true,
+  depthCompare: "less" }` and a pass `depthStencilAttachment` cleared to 1.0.
+  Create the depth texture lazily, recreate it in `resize` (destroy the old
+  one first), destroy the last in `destroy()`. Convex shapes can instead use
+  the two-pass cull-front-then-cull-back trick (001 does).
+- **Shape/param edits without churn.** If a control changes only vertex
+  *positions* (not counts or topology), recompute the vertex array and
+  re-upload to the same buffer — no pipeline/buffer recreation, index buffer
+  untouched (002 does this).
+- **Serving locally:** doodles need `http(s)`, not `file://`. From the
+  **repository root**: `python -m http.server`, then
+  `http://localhost:8000/src/webgpu/doodles/NNN-slug/`. Serving from the repo
+  root keeps `../../lib/` resolving the same way as on the live site. Ignore
+  404s for `/favicon.ico` and `/.well-known/appspecific/com.chrome.devtools.json`.
+- **"No available adapters" / fallback fires:** the API exists but
+  `requestAdapter()` returned null — the browser can't reach a GPU. Check
+  `chrome://gpu` (WebGPU should read "Hardware accelerated"); enable
+  Settings → System → "Use graphics acceleration", fully restart; failing
+  that `chrome://flags/#enable-unsafe-webgpu` (+ `#enable-vulkan` on Linux);
+  confirm Chrome/Edge 113+; note remote/VM/RDP sessions often expose no
+  adapter at all. Quick check independent of any doodle:
+  `await navigator.gpu?.requestAdapter()` in the console.
+
+## 12. Performance & resource discipline
+
+- One device per page; never request an adapter per frame.
+- Free what you allocate; the runtime destroys the device on full teardown.
+- Don't defeat the runtime's offscreen/hidden pausing with your own rAF.
+- Clamp sizes to `device.limits.maxTextureDimension2D`; cap DPR (2 is plenty;
+  the gallery will use 1).
+
+## 13. Accessibility & UX baseline
+
+- Honor `prefers-reduced-motion`: the runtime renders one frame and holds
+  unless `meta.prefersReducedMotionSafe` is true.
+- Every doodle page: visible title, one-line description, "← gallery" link,
+  pause/play control, `aria-label` on the canvas.
+- Fallback messages are real text, screen-reader accessible.
+
+## 14. Adding a new doodle — checklist
+
+All paths relative to `src/webgpu/`; touch nothing outside it (§0).
+
+1. `cp -r doodles/_template doodles/NNN-my-slug`.
+2. Fill in `doodle.js` `meta`, write `init` returning
+   `frame`/`resize`/`destroy`. Write `shader.wgsl`.
+3. Draft the doodle's `spec.md` (intent first — it's the brief).
+4. Owner serves from the repo root (§11) and opens
+   `/src/webgpu/doodles/NNN-my-slug/`; iterate from feedback (§1).
+5. Owner captures `thumb.png` (§8).
+6. Run `node src/webgpu/tools/build-manifest.mjs` to regenerate
+   `manifest.json`.
+7. Owner commits and pushes; CI deploys. Confirm the card appears at
+   `/webgpu/` and the standalone page runs in isolation.
+
+## 15. Definition of done (per doodle)
+
+- Runs standalone from its own folder over `http(s)`.
+- Appears in the gallery (via regenerated manifest) with a thumbnail or the
+  gradient fallback.
+- Mounts/unmounts cleanly: no console errors, no leaked GPU resources.
+- Shows the friendly fallback when WebGPU is unavailable.
+- Respects reduced-motion; pauses when hidden.
+- No absolute paths; works at `/src/webgpu/…` locally and `/webgpu/…` live.
+- Minification-safe (§3).
+- Has a `spec.md`; general lessons folded back into this spec.
+- Nothing modified outside `src/webgpu/`; external changes written up as
+  suggestions (§0).
+
+## 16. Current state vs target
+
+- **Built:** `lib/gpu.js`, `lib/loop.js`, `lib/support.js`; doodles
+  `001-rgb-cube` and `002-yarn-pillow` (each with a `spec.md`);
+  `doodles/_template/`; `tools/build-manifest.mjs`; static-card gallery.
+- **Not built:** `lib/gallery.js` + the live-thumbnail policy (§7);
+  `thumb.png` for 001/002 (owner-captured, pending).
+- **Future ideas:** tag filtering in the gallery; a tiny WGSL include
+  preprocessor in `loadWGSL` for shared noise/hash functions; Vite + TS if
+  type safety ever earns its build step.

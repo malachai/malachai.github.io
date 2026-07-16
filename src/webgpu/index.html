@@ -49,6 +49,8 @@
         #ff0000 0%, #ffff00 20%, #00ff00 40%,
         #00ffff 60%, #0000ff 80%, #ff00ff 100%);
     opacity: .85;
+    background-size: cover;
+    background-position: center;
   }
   .card-body { padding: 16px 20px 18px; }
   .card-head { display: flex; align-items: baseline; gap: 10px; }
@@ -109,12 +111,15 @@
       grid.innerHTML = doodles
         .map((d) => {
           const seq = (d.slug || "").split("-")[0];
+          const thumbStyle = d.thumbnail
+            ? ` style="background-image:url('${esc(d.path + d.thumbnail)}')"`
+            : "";
           const tags = (d.tags || [])
             .map((t) => `<span class="tag">${esc(t)}</span>`)
             .join("");
           return `
             <a class="card" href="${esc(d.path)}">
-              <div class="thumb"></div>
+              <div class="thumb"${thumbStyle}></div>
               <div class="card-body">
                 <div class="card-head">
                   <h2>${esc(d.title || d.slug)}</h2>
