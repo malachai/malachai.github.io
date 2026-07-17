@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Ring Sync — WebGPU doodle</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: #0e0e12;
+    color: #e9e9ee;
+    font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+  }
+  header { padding: 16px 20px 8px; }
+  header a.back { color: #9aa0ff; text-decoration: none; font-size: 13px; }
+  header a.back:hover { text-decoration: underline; }
+  h1 { margin: 6px 0 2px; font-size: 18px; font-weight: 600; }
+  p.desc { margin: 0; color: #a7a7b3; font-size: 13px; max-width: 60ch; }
+  #stage {
+    flex: 1;
+    min-height: 0;
+    margin: 12px 20px 20px;
+    border-radius: 10px;
+    overflow: hidden;
+    background:
+      radial-gradient(120% 120% at 50% 40%, #17171d 0%, #0a0a0e 100%);
+    position: relative;
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  .controls {
+    position: absolute; left: 12px; bottom: 12px;
+    display: flex; gap: 8px;
+  }
+  .controls button {
+    background: rgba(255,255,255,0.08);
+    color: #e9e9ee;
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 6px;
+    padding: 5px 12px;
+    font: inherit; font-size: 13px;
+    cursor: pointer;
+  }
+  .controls button:hover { background: rgba(255,255,255,0.14); }
+
+  /* Tunable panel, top-right of the stage. */
+  .panel {
+    position: absolute; top: 12px; right: 12px;
+    width: 226px;
+    background: rgba(14,14,20,0.72);
+    backdrop-filter: blur(6px);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 10px;
+    padding: 12px 12px 10px;
+    display: flex; flex-direction: column; gap: 9px;
+    font-size: 12px; color: #cdd0da;
+  }
+  .panel .row { display: flex; flex-direction: column; gap: 3px; }
+  .panel .row .lbl { display: flex; justify-content: space-between; }
+  .panel .row .lbl b { font-weight: 600; color: #e9e9ee; }
+  .panel input[type="range"] { width: 100%; accent-color: #0058ab; }
+  .panel .inline { flex-direction: row; align-items: center; justify-content: space-between; gap: 8px; }
+  .panel input[type="color"] {
+    width: 34px; height: 22px; padding: 0; border: none; background: none; cursor: pointer;
+  }
+  .panel .btnrow { display: flex; gap: 8px; margin-top: 2px; }
+  .panel .btnrow button {
+    flex: 1;
+    background: rgba(86,182,194,0.16);
+    color: #d7f2f5;
+    border: 1px solid rgba(86,182,194,0.35);
+    border-radius: 6px; padding: 6px 8px; font: inherit; font-size: 12px; cursor: pointer;
+  }
+  .panel .btnrow button:hover { background: rgba(86,182,194,0.26); }
+  .panel .chk { display: flex; align-items: center; gap: 7px; }
+  .panel summary { cursor: pointer; color: #9aa0ff; list-style: none; font-size: 12px; }
+  .panel summary::-webkit-details-marker { display: none; }
+
+  /* Pressure table, top-left of the stage. */
+  .ptable {
+    position: absolute; top: 12px; left: 12px;
+    width: 212px;
+    background: rgba(14,14,20,0.72);
+    backdrop-filter: blur(6px);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 10px;
+    padding: 10px 12px 11px;
+    font-size: 12px; color: #cdd0da;
+  }
+  .ptable h2 {
+    margin: 0 0 8px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
+    text-transform: uppercase; color: #9aa0ff;
+  }
+  .ptable .prow { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+  .ptable .plabel { width: 34px; color: #a7a7b3; font-variant-numeric: tabular-nums; }
+  .ptable .ptrack {
+    flex: 1; height: 8px; border-radius: 4px; overflow: hidden;
+    background: rgba(255,255,255,0.08);
+  }
+  .ptable .pfill { height: 100%; width: 0%; background: #0058ab; transition: width 0.08s linear; }
+  .ptable .pval { width: 30px; text-align: right; color: #e9e9ee; font-variant-numeric: tabular-nums; }
+  .ptable .pkpa { width: 56px; text-align: right; color: #8fb4dd; font-variant-numeric: tabular-nums; }
+
+  .doodle-fallback {
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 14px; height: 100%;
+    padding: 24px; text-align: center; color: #c7c7d1;
+  }
+  .doodle-fallback img { max-width: 480px; width: 100%; border-radius: 8px; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "doodle-lib/": "../../lib/"
+  }
+}
+</script>
+</head>
+<body>
+  <header>
+    <a class="back" href="../../index.html">← gallery</a>
+    <h1>Ring Sync</h1>
+    <p class="desc">
+      Concentric gated rings trade liquid through lined-up gates and slowly
+      settle into sync.
+    </p>
+  </header>
+
+  <div id="stage">
+    <canvas id="c" aria-label="A top-down machine of concentric rings exchanging liquid through gates and settling into a common rotation."></canvas>
+
+    <div class="controls"><button id="toggle" type="button">Pause</button></div>
+
+    <div class="ptable" id="ptable">
+      <h2>ring pressure</h2>
+      <div id="prows"></div>
+    </div>
+
+    <details class="panel" id="panel" open>
+      <summary>controls</summary>
+
+      <div class="row">
+        <span class="lbl">rings <b id="v-rings">8</b></span>
+        <input type="range" id="r-rings" min="3" max="24" step="1" value="8" />
+      </div>
+      <div class="row">
+        <span class="lbl">spin <b id="v-spin">0.60</b></span>
+        <input type="range" id="r-spin" min="-1.5" max="1.5" step="0.01" value="0.6" />
+      </div>
+      <div class="row">
+        <span class="lbl">flow <b id="v-flow">0.40</b></span>
+        <input type="range" id="r-flow" min="0.05" max="1.2" step="0.01" value="0.4" />
+      </div>
+      <div class="row">
+        <span class="lbl">viscosity <b id="v-visc">1.0</b></span>
+        <input type="range" id="r-visc" min="0.3" max="4" step="0.1" value="1" />
+      </div>
+      <div class="row">
+        <span class="lbl">border <b id="v-border">0.30</b></span>
+        <input type="range" id="r-border" min="0.15" max="0.5" step="0.01" value="0.3" />
+      </div>
+      <div class="row">
+        <span class="lbl">gate <b id="v-gate">0.030</b></span>
+        <input type="range" id="r-gate" min="0.03" max="0.2" step="0.005" value="0.03" />
+      </div>
+      <div class="row inline">
+        <span>liquid colour</span>
+        <input type="color" id="r-color" value="#0058ab" />
+      </div>
+      <label class="chk">
+        <input type="checkbox" id="r-auto" checked /> auto-reset on sync
+      </label>
+      <div class="btnrow">
+        <button id="r-reset" type="button">reset</button>
+      </div>
+    </details>
+  </div>
+
+  <script type="module">
+    import { isWebGPUAvailable, renderFallback } from "doodle-lib/support.js";
+    import { initGPU } from "doodle-lib/gpu.js";
+    import { runLoop } from "doodle-lib/loop.js";
+
+    // Cache-bust the frequently-edited doodle files (spec.md §6).
+    const BUST = "?ts=" + Date.now();
+
+    const canvas = document.getElementById("c");
+    const stage = document.getElementById("stage");
+    const panel = document.getElementById("panel");
+    const ptable = document.getElementById("ptable");
+    const toggle = document.getElementById("toggle");
+
+    const loadWGSL = (url) =>
+      fetch(new URL(url + BUST, import.meta.url)).then((r) => {
+        if (!r.ok) throw new Error(`Failed to load ${url}: HTTP ${r.status}`);
+        return r.text();
+      });
+
+    (async () => {
+      const doodle = (await import("./doodle.js" + BUST)).default;
+
+      if (!isWebGPUAvailable()) {
+        toggle.remove();
+        panel.remove();
+        ptable.remove();
+        renderFallback(stage, { reason: "no-webgpu", thumbnail: doodle.meta.thumbnail });
+        return;
+      }
+      try {
+        const { adapter, device, context, format } = await initGPU(canvas);
+        const instance = await doodle.init({
+          device, adapter, context, canvas, format, loadWGSL,
+          mode: "standalone", quality: 1,
+        });
+        const handle = runLoop(instance, { canvas, context, device });
+
+        let playing = true;
+        toggle.addEventListener("click", () => {
+          playing = !playing;
+          if (playing) handle.resume();
+          else handle.pause();
+          toggle.textContent = playing ? "Pause" : "Play";
+        });
+
+        // ---- wire the control panel ----
+        const $ = (id) => document.getElementById(id);
+        const bindSlider = (id, vid, fmt, set) => {
+          const el = $(id), lab = $(vid);
+          el.addEventListener("input", () => {
+            const val = parseFloat(el.value);
+            set(val);
+            lab.textContent = fmt(val);
+          });
+        };
+        bindSlider("r-rings", "v-rings", (v) => String(v | 0), (v) => instance.setRingCount(v));
+        bindSlider("r-spin", "v-spin", (v) => v.toFixed(2), (v) => instance.setSpin(v));
+        bindSlider("r-flow", "v-flow", (v) => v.toFixed(2), (v) => instance.setFlowRate(v));
+        bindSlider("r-visc", "v-visc", (v) => v.toFixed(1), (v) => instance.setViscosity(v));
+        bindSlider("r-border", "v-border", (v) => v.toFixed(2), (v) => instance.setBorderWidth(v));
+        bindSlider("r-gate", "v-gate", (v) => v.toFixed(3), (v) => instance.setGateWidth(v));
+        $("r-color").addEventListener("input", (e) => instance.setColor(e.target.value));
+        $("r-auto").addEventListener("change", (e) => instance.setAutoReset(e.target.checked));
+        $("r-reset").addEventListener("click", () => instance.reset());
+
+        // ---- ring-pressure table (rebuilds when the ring count changes) ----
+        // Pressure is fill 0..1; shown as a % and as an absolute value in kPa
+        // (0 at empty, KPA_FULL at a full ring).
+        const KPA_FULL = 250;
+        const prows = $("prows");
+        let fills = [];   // { bar, val, kpa } per ring
+        function buildTable(n) {
+          prows.innerHTML = "";
+          fills = [];
+          for (let i = 0; i < n; i++) {
+            const row = document.createElement("div");
+            row.className = "prow";
+            const lbl = i === 0 ? "core" : "R" + i;
+            row.innerHTML =
+              `<span class="plabel">${lbl}</span>` +
+              `<span class="ptrack"><span class="pfill"></span></span>` +
+              `<span class="pval">0%</span>` +
+              `<span class="pkpa">0 kPa</span>`;
+            prows.appendChild(row);
+            fills.push({
+              bar: row.querySelector(".pfill"),
+              val: row.querySelector(".pval"),
+              kpa: row.querySelector(".pkpa"),
+            });
+          }
+        }
+        buildTable(instance.getRingCount());
+
+        const tick = () => {
+          const p = instance.getPressures();
+          if (p.length !== fills.length) buildTable(p.length);
+          for (let i = 0; i < p.length; i++) {
+            const raw = Math.max(0, p[i]);            // uncapped (can exceed "full")
+            fills[i].bar.style.width = Math.min(100, Math.round(raw * 100)) + "%";
+            fills[i].val.textContent = Math.round(raw * 100) + "%";
+            fills[i].kpa.textContent = Math.round(raw * KPA_FULL) + " kPa";
+          }
+          requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      } catch (err) {
+        console.error(err);
+        toggle.remove();
+        panel.remove();
+        ptable.remove();
+        renderFallback(stage, {
+          reason: String((err && err.message) || err),
+          thumbnail: doodle.meta.thumbnail,
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

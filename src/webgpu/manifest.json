@@ -1,5 +1,5 @@
 {
-  "generated": "2026-07-16",
+  "generated": "2026-07-17",
   "doodles": [
     {
       "slug": "001-rgb-cube",
@@ -28,6 +28,21 @@
         "color"
       ],
       "created": "2026-07-09",
+      "thumbnail": null
+    },
+    {
+      "slug": "004-ring-sync",
+      "path": "doodles/004-ring-sync/",
+      "title": "Ring Sync",
+      "description": "Concentric gated rings trade liquid through lined-up gates and slowly settle into sync.",
+      "tags": [
+        "2d",
+        "sdf",
+        "simulation",
+        "physics",
+        "generative"
+      ],
+      "created": "2026-07-17",
       "thumbnail": null
     }
   ]
