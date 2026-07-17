@@ -64,6 +64,32 @@
   .panel .row .lbl { display: flex; justify-content: space-between; }
   .panel .row .lbl b { font-weight: 600; color: #e9e9ee; }
   .panel input[type="range"] { width: 100%; accent-color: #0058ab; }
+  /* Dual-thumb range: two overlaid range inputs (transparent tracks, only the
+     thumbs are interactive) over a shared track with a highlighted sub-range. */
+  .panel .dual { position: relative; height: 22px; }
+  .panel .dual .track {
+    position: absolute; left: 0; right: 0; top: 9px; height: 4px;
+    border-radius: 2px; background: rgba(255,255,255,0.14);
+  }
+  .panel .dual .fill {
+    position: absolute; top: 9px; height: 4px; border-radius: 2px; background: #0058ab;
+  }
+  .panel .dual input[type="range"] {
+    position: absolute; left: 0; top: 0; width: 100%; height: 22px; margin: 0;
+    -webkit-appearance: none; appearance: none; background: transparent; pointer-events: none;
+  }
+  .panel .dual input[type="range"]::-webkit-slider-runnable-track { background: transparent; border: none; }
+  .panel .dual input[type="range"]::-moz-range-track { background: transparent; border: none; }
+  .panel .dual input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none; pointer-events: auto; cursor: pointer;
+    width: 14px; height: 14px; margin-top: 4px; border-radius: 50%;
+    background: #e9e9ee; border: 2px solid #0058ab;
+  }
+  .panel .dual input[type="range"]::-moz-range-thumb {
+    pointer-events: auto; cursor: pointer;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: #e9e9ee; border: 2px solid #0058ab;
+  }
   .panel .inline { flex-direction: row; align-items: center; justify-content: space-between; gap: 8px; }
   .panel input[type="color"] {
     width: 34px; height: 22px; padding: 0; border: none; background: none; cursor: pointer;
@@ -84,7 +110,7 @@
   /* Pressure table, top-left of the stage. */
   .ptable {
     position: absolute; top: 12px; left: 12px;
-    width: 212px;
+    width: 258px;
     background: rgba(14,14,20,0.72);
     backdrop-filter: blur(6px);
     border: 1px solid rgba(255,255,255,0.10);
@@ -96,15 +122,18 @@
     margin: 0 0 8px; font-size: 11px; font-weight: 600; letter-spacing: 0.04em;
     text-transform: uppercase; color: #9aa0ff;
   }
-  .ptable .prow { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
-  .ptable .plabel { width: 34px; color: #a7a7b3; font-variant-numeric: tabular-nums; }
+  .ptable .prow { display: flex; align-items: center; gap: 5px; margin: 3px 0; }
+  .ptable .plabel { width: 28px; color: #a7a7b3; font-variant-numeric: tabular-nums; }
   .ptable .ptrack {
     flex: 1; height: 8px; border-radius: 4px; overflow: hidden;
     background: rgba(255,255,255,0.08);
   }
   .ptable .pfill { height: 100%; width: 0%; background: #0058ab; transition: width 0.08s linear; }
   .ptable .pval { width: 30px; text-align: right; color: #e9e9ee; font-variant-numeric: tabular-nums; }
-  .ptable .pkpa { width: 56px; text-align: right; color: #8fb4dd; font-variant-numeric: tabular-nums; }
+  .ptable .pkpa { width: 52px; text-align: right; color: #8fb4dd; font-variant-numeric: tabular-nums; }
+  .ptable .pspd { width: 44px; text-align: right; color: #cfc08f; font-variant-numeric: tabular-nums; }
+  .ptable .phead { color: #6f7180; font-size: 10px; letter-spacing: 0.02em; margin-bottom: 2px; }
+  .ptable .phead .pval, .ptable .phead .pkpa, .ptable .phead .pspd { color: #6f7180; }
 
   .doodle-fallback {
     display: flex; flex-direction: column; align-items: center;
@@ -149,12 +178,8 @@
         <input type="range" id="r-rings" min="3" max="24" step="1" value="8" />
       </div>
       <div class="row">
-        <span class="lbl">spin <b id="v-spin">0.60</b></span>
-        <input type="range" id="r-spin" min="-1.5" max="1.5" step="0.01" value="0.6" />
-      </div>
-      <div class="row">
         <span class="lbl">flow <b id="v-flow">0.40</b></span>
-        <input type="range" id="r-flow" min="0.05" max="1.2" step="0.01" value="0.4" />
+        <input type="range" id="r-flow" min="-2" max="6" step="0.05" value="-0.4" />
       </div>
       <div class="row">
         <span class="lbl">viscosity <b id="v-visc">1.0</b></span>
@@ -165,8 +190,24 @@
         <input type="range" id="r-border" min="0.15" max="0.5" step="0.01" value="0.3" />
       </div>
       <div class="row">
-        <span class="lbl">gate <b id="v-gate">0.030</b></span>
-        <input type="range" id="r-gate" min="0.03" max="0.2" step="0.005" value="0.03" />
+        <span class="lbl">shear lines <b id="v-lines">3</b></span>
+        <input type="range" id="r-lines" min="1" max="8" step="1" value="3" />
+      </div>
+      <div class="row">
+        <span class="lbl">gate width <b id="v-gate">2.0–5.0%</b></span>
+        <div class="dual">
+          <div class="track"></div><div class="fill" id="f-gate"></div>
+          <input type="range" id="r-gmin" min="0.005" max="0.3" step="0.005" value="0.02" />
+          <input type="range" id="r-gmax" min="0.005" max="0.3" step="0.005" value="0.05" />
+        </div>
+      </div>
+      <div class="row">
+        <span class="lbl">orientation <b id="v-orient">100–150°</b></span>
+        <div class="dual">
+          <div class="track"></div><div class="fill" id="f-orient"></div>
+          <input type="range" id="r-omin" min="1" max="179" step="1" value="100" />
+          <input type="range" id="r-omax" min="1" max="179" step="1" value="150" />
+        </div>
       </div>
       <div class="row inline">
         <span>liquid colour</span>
@@ -238,23 +279,93 @@
           });
         };
         bindSlider("r-rings", "v-rings", (v) => String(v | 0), (v) => instance.setRingCount(v));
-        bindSlider("r-spin", "v-spin", (v) => v.toFixed(2), (v) => instance.setSpin(v));
-        bindSlider("r-flow", "v-flow", (v) => v.toFixed(2), (v) => instance.setFlowRate(v));
+        // Dual-thumb range: two overlaid range inputs whose thumbs can't cross
+        // (min ≤ max, enforced live), a highlighted fill between them, and a
+        // combined label. setLo/setHi push each end to the doodle.
+        const bindDualRange = (loId, hiId, fillId, labId, fmt, setLo, setHi) => {
+          const lo = $(loId), hi = $(hiId), fill = $(fillId), lab = $(labId);
+          const a = parseFloat(lo.min), b = parseFloat(lo.max);
+          const pct = (v) => ((v - a) / (b - a)) * 100;
+          const refresh = () => {
+            const vlo = parseFloat(lo.value), vhi = parseFloat(hi.value);
+            fill.style.left = pct(vlo) + "%";
+            fill.style.width = (pct(vhi) - pct(vlo)) + "%";
+            lab.textContent = fmt(vlo, vhi);
+          };
+          lo.addEventListener("input", () => {
+            let vlo = parseFloat(lo.value);
+            if (vlo > parseFloat(hi.value)) { vlo = parseFloat(hi.value); lo.value = vlo; }
+            setLo(vlo); refresh();
+          });
+          hi.addEventListener("input", () => {
+            let vhi = parseFloat(hi.value);
+            if (vhi < parseFloat(lo.value)) { vhi = parseFloat(lo.value); hi.value = vhi; }
+            setHi(vhi); refresh();
+          });
+          refresh();
+        };
+        // Flow is a log-scale slider (0.01 … 1,000,000): the slider carries
+        // log10(flow); map back to the actual rate.
+        {
+          const el = $("r-flow"), lab = $("v-flow");
+          const fmt = (f) => (f >= 1000 ? f.toExponential(1) : (f >= 10 ? f.toFixed(0) : f.toFixed(2)));
+          el.addEventListener("input", () => {
+            const f = Math.pow(10, parseFloat(el.value));
+            instance.setFlowRate(f);
+            lab.textContent = fmt(f);
+          });
+        }
         bindSlider("r-visc", "v-visc", (v) => v.toFixed(1), (v) => instance.setViscosity(v));
         bindSlider("r-border", "v-border", (v) => v.toFixed(2), (v) => instance.setBorderWidth(v));
-        bindSlider("r-gate", "v-gate", (v) => v.toFixed(3), (v) => instance.setGateWidth(v));
+        bindSlider("r-lines", "v-lines", (v) => String(v | 0), (v) => instance.setShearLines(v));
+        bindDualRange("r-gmin", "r-gmax", "f-gate", "v-gate",
+          (a, b) => (a * 100).toFixed(1) + "–" + (b * 100).toFixed(1) + "%",
+          (v) => instance.setGateMin(v), (v) => instance.setGateMax(v));
+        bindDualRange("r-omin", "r-omax", "f-orient", "v-orient",
+          (a, b) => (a | 0) + "–" + (b | 0) + "°",
+          (v) => instance.setOrientMin(v), (v) => instance.setOrientMax(v));
         $("r-color").addEventListener("input", (e) => instance.setColor(e.target.value));
         $("r-auto").addEventListener("change", (e) => instance.setAutoReset(e.target.checked));
         $("r-reset").addEventListener("click", () => instance.reset());
 
-        // ---- ring-pressure table (rebuilds when the ring count changes) ----
-        // Pressure is fill 0..1; shown as a % and as an absolute value in kPa
-        // (0 at empty, KPA_FULL at a full ring).
+        // ---- ring table (pressure + speed; rebuilds when ring count changes) --
+        // Pressure is fill 0..1 shown as % and absolute kPa (0 at empty,
+        // KPA_FULL at a full ring, uncapped). Speed is angular velocity (rad/s,
+        // signed). Each bar is tinted the ring's palette colour (matches the
+        // shader's ringColor).
         const KPA_FULL = 250;
         const prows = $("prows");
-        let fills = [];   // { bar, val, kpa } per ring
+        let fills = [];   // { bar, val, kpa, spd } per ring
+
+        // Match shader ringColor(k): cosine palette shifted by the chosen hue.
+        const hexToRgb = (hex) => {
+          let h = hex.replace("#", "");
+          if (h.length === 3) h = h.split("").map((c) => c + c).join("");
+          const n = parseInt(h, 16);
+          return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+        };
+        const hueOf = (c) => {
+          const mx = Math.max(...c), mn = Math.min(...c), d = mx - mn;
+          if (d < 1e-6) return 0;
+          let hh;
+          if (mx === c[0]) hh = ((c[1] - c[2]) / d) % 6;
+          else if (mx === c[1]) hh = (c[2] - c[0]) / d + 2;
+          else hh = (c[0] - c[1]) / d + 4;
+          hh /= 6;
+          return hh < 0 ? hh + 1 : hh;
+        };
+        const ringCss = (k, hue) => {
+          const off = [0, 0.33, 0.67];
+          const rgb = off.map((o) => 0.5 + 0.5 * Math.cos(2 * Math.PI * (0.13 * k + hue + o)));
+          return "rgb(" + rgb.map((x) => Math.round(Math.max(0, Math.min(1, x)) * 255)).join(",") + ")";
+        };
+
         function buildTable(n) {
-          prows.innerHTML = "";
+          prows.innerHTML =
+            `<div class="prow phead"><span class="plabel"></span>` +
+            `<span class="ptrack" style="background:none"></span>` +
+            `<span class="pval">%</span><span class="pkpa">kPa</span>` +
+            `<span class="pspd">rad/s</span></div>`;
           fills = [];
           for (let i = 0; i < n; i++) {
             const row = document.createElement("div");
@@ -264,12 +375,14 @@
               `<span class="plabel">${lbl}</span>` +
               `<span class="ptrack"><span class="pfill"></span></span>` +
               `<span class="pval">0%</span>` +
-              `<span class="pkpa">0 kPa</span>`;
+              `<span class="pkpa">0</span>` +
+              `<span class="pspd">0.00</span>`;
             prows.appendChild(row);
             fills.push({
               bar: row.querySelector(".pfill"),
               val: row.querySelector(".pval"),
               kpa: row.querySelector(".pkpa"),
+              spd: row.querySelector(".pspd"),
             });
           }
         }
@@ -277,12 +390,16 @@
 
         const tick = () => {
           const p = instance.getPressures();
+          const s = instance.getSpeeds();
           if (p.length !== fills.length) buildTable(p.length);
+          const hue = hueOf(hexToRgb(instance.getColor()));
           for (let i = 0; i < p.length; i++) {
             const raw = Math.max(0, p[i]);            // uncapped (can exceed "full")
             fills[i].bar.style.width = Math.min(100, Math.round(raw * 100)) + "%";
+            fills[i].bar.style.background = ringCss(i, hue);
             fills[i].val.textContent = Math.round(raw * 100) + "%";
-            fills[i].kpa.textContent = Math.round(raw * KPA_FULL) + " kPa";
+            fills[i].kpa.textContent = Math.round(raw * KPA_FULL);
+            fills[i].spd.textContent = (s[i] >= 0 ? "" : "-") + Math.abs(s[i]).toFixed(2);
           }
           requestAnimationFrame(tick);
         };

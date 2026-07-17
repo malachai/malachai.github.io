@@ -8,7 +8,8 @@
 // spinning the rings. Spin therefore comes only from the moving liquid; it
 // emerges from zero, propagates outward, and the whole assembly settles into a
 // common rotation (sync). The outermost ring vents to the void so liquid keeps
-// flowing. The `spin` control sets that common rate's direction and vigour.
+// flowing. Each ring's spin direction and rate come entirely from its gate
+// orientation and the driving pressure — there is no separate drive control.
 //
 // The GPU only draws (see shader.wgsl); this module runs the whole simulation
 // on the CPU in fixed substeps and uploads per-ring state each frame. Module
@@ -23,17 +24,14 @@ const MAXR = 24;                 // storage buffer is sized for the max ring cou
 const SUB = 1 / 240;             // fixed simulation substep (s)
 const FADE_DUR = 0.6;            // reset dissolve duration (s)
 const INJECT = 1.0;             // centre pump injection-rate scale (× flowRate · cap0)
-const PSTALL = 24.0;            // pump stall pressure (soft) — injection tapers to 0 near here
-const PMAX = 40.0;              // hard pressure safety clamp (prevents numeric overflow)
+const GATE_REF = 0.03;          // reference gate width — the drive scales with gw/GATE_REF
 
 // --- Simulation constants (tunable; emergent behaviour needs on-hardware tuning) ---
 const QMAX = 2.2;                // peak pressure-driven transfer rate at full overlap
-const VJET = 1.0;                // drive rate scale: a gate urges its ring toward VJET·spin·cant
+const VJET = 1.0;                // drive gain: gate targets VJET·cant·jetP·(gw/GATE_REF)
 const KDRIVE = 30.0;             // how hard a canted gate torques its ring (× flow)
 const KVISC = 25.0;              // viscous neighbour lock through the moving liquid (× flow)
 const SHELL = 0.07;              // shell mass density (M_i = SHELL * rMid_i)
-const CMIN = 0.35;               // min gate cant (never radial → always some tangential force)
-const CMAX = 1.70;               // max gate cant (wide range → visibly varied gate angles)
 const EPS = 0.03;                // sync: max spread of ω across rings (rad/s)
 const SYNC_MIN_RATE = 0.12;      // sync: must actually be rotating (not resting) to count
 const SYNC_HOLD = 5.0;           // continuous seconds within spread to count as synced
@@ -91,11 +89,14 @@ export default {
 
     // ---- controls (defaults chosen to look good unattended) ----------------
     let ringCount = 8;
-    let spin = 0.6;          // drive: sign = spin direction, |spin| = terminal rate/vigour
     let flowRate = 0.4;      // centre pump throughput (how fast it feeds the system)
     let viscosity = 1.0;     // higher = liquid flows/equalises between rings more slowly
     let borderFrac = 0.3;    // wall thickness as a fraction of pitch
-    let gateHalfArc = 0.03;  // gate half arc-length (normalised; outer radius = 1)
+    let numShearLines = 3;   // number of spiral shear lines = gates per ring
+    let gateMinFrac = 0.02;  // gate width range (fraction of circumference); each ring random in [min,max]
+    let gateMaxFrac = 0.05;
+    let orientMin = 100;     // gate orientation range (degrees, 1..179; 90 = radial → no shear)
+    let orientMax = 150;
     let autoReset = true;
     let colorRGB = [0x00 / 255, 0x58 / 255, 0xab / 255];
 
@@ -106,10 +107,11 @@ export default {
     const cap = new Float32Array(MAXR);
     const shell = new Float32Array(MAXR);
     const rMid = new Float32Array(MAXR);
-    const alpha = new Float32Array(MAXR);
-    const beta = new Float32Array(MAXR);
-    const cantIn = new Float32Array(MAXR);   // inner-gate cant magnitude (0=radial forbidden)
-    const cantOut = new Float32Array(MAXR);  // outer-gate cant magnitude
+    const g0 = new Float32Array(MAXR);       // ring's gate base angle (spiral offset, at ring mid)
+    const shear = new Float32Array(MAXR);    // within-ring shear (angle across the ring) = the cant
+    const gw = new Float32Array(MAXR);       // per-ring gate half-width fraction (of circumference)
+    const rw = new Float32Array(MAXR);       // stored 0..1 random for gate width (stable across live edits)
+    const ro = new Float32Array(MAXR);       // stored 0..1 random for gate orientation
     const burst = new Float32Array(MAXR);
     let ventBurst = 0;
 
@@ -128,6 +130,33 @@ export default {
     const TAU = Math.PI * 2;
     const wrap = (x) => x - TAU * Math.floor(x / TAU);
     const wrapDelta = (a, b) => { let d = a - b; return d - TAU * Math.round(d / TAU); };
+
+    // Each ring has `numShearLines` evenly-spaced gates. A ring's gate is a
+    // sheared slot: its centre shears with radius about the ring mid, so the
+    // outlet (outer border) and inlet (inner border) sit at these sheared angles
+    // (the M gates are these ± k·2π/M). The spiral base `g0` accumulates the
+    // shear outward so the lines connect ring-to-ring into continuous spirals.
+    const outAng = (i) => phi[i] + g0[i] + 0.5 * shear[i];   // outer border (outlet)
+    const inAng = (i) => phi[i] + g0[i] - 0.5 * shear[i];    // inner border (inlet)
+
+    // Build the gates: each ring gets a gate WIDTH (random in [gateMinFrac,
+    // gateMaxFrac]) and an ORIENTATION in degrees (random in [orientMin,
+    // orientMax]; 90° = radial → zero shear, away from 90° cants the slot). The
+    // orientation becomes the ring's shear (cant); the accumulated base offset g0
+    // connects each ring's outlet to the next ring's inlet into continuous
+    // spirals. Uses stored rw/ro so live edits don't consume the RNG.
+    function deriveGates() {
+      const N = ringCount;
+      const wSpan = gateMaxFrac - gateMinFrac;
+      const oSpan = orientMax - orientMin;
+      for (let i = 0; i < N; i++) {
+        gw[i] = gateMinFrac + rw[i] * wSpan;
+        const orient = orientMin + ro[i] * oSpan;      // degrees, 1..179
+        shear[i] = (orient - 90) * Math.PI / 180;      // 90° = radial (no shear)
+      }
+      g0[0] = 0;
+      for (let i = 1; i < N; i++) g0[i] = g0[i - 1] + 0.5 * shear[i - 1] + 0.5 * shear[i];
+    }
 
     // ---- geometry (normalised radii, outer = 1) ----------------------------
     function deriveGeom() {
@@ -165,18 +194,15 @@ export default {
       deriveGeom();
       const N = ringCount;
       for (let i = 0; i < N; i++) {
-        phi[i] = rand() * TAU;
-        alpha[i] = rand() * TAU;
-        beta[i] = rand() * TAU;
-        // Every gate is canted (magnitude in [CMIN, CMAX]) — never radial, so a
-        // gate always imparts tangential force — and each has its OWN random
-        // orientation (independent lean direction), so no two gates are alike.
-        cantIn[i] = (CMIN + rand() * (CMAX - CMIN)) * (rand() < 0.5 ? -1 : 1);
-        cantOut[i] = (CMIN + rand() * (CMAX - CMIN)) * (rand() < 0.5 ? -1 : 1);
+        phi[i] = 0;               // start aligned so the spiral is clean at reset
+        rw[i] = rand();           // per-ring gate width sample (in [min,max])
+        ro[i] = rand();           // per-ring gate orientation sample (in [min,max])
         mass[i] = 0;
         burst[i] = 0;
-        omega[i] = 0;             // rings start at rest — spin comes only from liquid
+        omega[i] = 0;             // outer rings start at rest — spin from liquid
       }
+      deriveGates();
+      // omega[0] stays 0 — the centre spins up purely from the flow through its gates.
       ventBurst = 0;
       syncTimer = 0;
       held = false;
@@ -191,11 +217,16 @@ export default {
 
     doReset(1);
 
-    // A canted gate drives its ring toward `VJET·spin·cant`. The DIRECTION comes
-    // from the gate's own signed orientation (cant), so each ring's spin
-    // direction depends on its gates; strength scales with flow q and |cant|.
-    function driveGate(i, cant, q) {
-      const target = VJET * spin * cant;
+    // A canted gate drives its ring in the direction it visibly leans (sign
+    // negated so the induced spin matches the gate's on-screen orientation, so
+    // the gate ORIENTATION alone sets each ring's spin direction). The TERMINAL
+    // rate is an honest function of the driving (jet) PRESSURE and the GATE
+    // WIDTH — `target = VJET·cant·jetP·(gw/GATE_REF)` — with NO cap, so a ring
+    // that keeps gaining pressure (or a wider gate) keeps speeding up. The
+    // approach rate scales with the actual mass flow q and |cant|, so a wider,
+    // higher-pressure gate also spins its ring up faster.
+    function driveGate(i, cant, q, jetP, width) {
+      const target = -VJET * cant * jetP * (width / GATE_REF);
       omega[i] += (target - omega[i]) * Math.min(0.5, KDRIVE * q * Math.abs(cant) * SUB);
     }
 
@@ -203,25 +234,27 @@ export default {
     function substep(dt) {
       const N = ringCount;
 
-      // Centre: constant-flow pump AND driven rotor. It spins at `spin` so its
-      // outlet gate sweeps — a from-rest, fully-gated system can't self-start
-      // (no flow → no spin → gates never align), so the centre is the driver;
-      // the outer rings' spin still emerges from their own gates. Pressure is
-      // uncapped (soft stall) — it builds between alignments and bursts through
-      // on one.
-      omega[0] = spin;
-      const P0now = mass[0] / cap[0];
-      mass[0] += flowRate * cap[0] * INJECT * Math.max(0, 1 - P0now / PSTALL) * dt;
+      // Centre (inner ring): the constant-flow pump. It is NOT driven at a fixed
+      // speed — its rotation emerges purely from the liquid flowing out through
+      // its own gate (driven below, exactly like every other ring). The pump
+      // injects a fixed volume per second regardless of back-pressure (no
+      // stall); pressure finds its own equilibrium through the gated outflow and
+      // the outer vent, with no artificial ceiling.
+      mass[0] += flowRate * cap[0] * INJECT * dt;
 
       // Centre → ring 1 ONLY while the centre outlet gate aligns with ring 1's
       // inlet gate; the amount scales with the overlap (the size of the opening
       // between the two gates).
+      const spacing = TAU / numShearLines;         // angular spacing of the M gates
       if (N > 1) {
-        const rb = 1 / N;                          // centre/ring-1 boundary radius
-        const w = gateHalfArc / rb;
-        const d = Math.abs(wrapDelta(phi[0] + beta[0], phi[1] + alpha[1]));
-        const overlap = Math.max(0, 1 - d / (2 * w));
-        const dP = mass[0] / cap[0] - mass[1] / cap[1];
+        // With M evenly-spaced gates, alignment repeats every `spacing`; fold the
+        // phase gap into the nearest gate.
+        let d = wrapDelta(outAng(0), inAng(1));
+        d = Math.abs(d - spacing * Math.round(d / spacing));
+        const wsum = (gw[0] + gw[1]) * Math.PI;     // sum of the two gate half-widths
+        const overlap = Math.max(0, 1 - d / wsum);
+        const P0 = mass[0] / cap[0];
+        const dP = P0 - mass[1] / cap[1];
         if (overlap > 0 && dP > 0) {
           let dm = (QMAX / viscosity) * overlap * dP * dt * cap[0];
           dm = Math.min(dm, mass[0], dP * cap[0] * cap[1] / (cap[0] + cap[1]));
@@ -229,7 +262,8 @@ export default {
             mass[0] -= dm;
             mass[1] += dm;
             const q = dm / dt;
-            driveGate(1, cantIn[1], q);            // ring 1 spun by its own inlet gate
+            driveGate(0, shear[0], q, P0, gw[0]);  // centre spun by its own outflow gate
+            driveGate(1, shear[1], q, P0, gw[1]);  // ring 1 spun by its inlet gate
             const b = Math.min(1, q * BURST_SCALE);
             if (b > burst[0]) burst[0] = b;
           }
@@ -246,10 +280,10 @@ export default {
         const Pj = mass[j] / cap[j];
         const dP = Pi - Pj;
         if (dP <= 1e-5) continue;                  // pressure-driven, outward only
-        const rb = (i + 1) / N;
-        const w = gateHalfArc / rb;
-        const d = Math.abs(wrapDelta(phi[i] + beta[i], phi[j] + alpha[j]));
-        const overlap = Math.max(0, 1 - d / (2 * w));
+        let d = wrapDelta(outAng(i), inAng(j));
+        d = Math.abs(d - spacing * Math.round(d / spacing));
+        const wsum = (gw[i] + gw[j]) * Math.PI;     // sum of the two gate half-widths
+        const overlap = Math.max(0, 1 - d / wsum);
         if (overlap <= 0) continue;
 
         // Viscosity slows the pressure-equalising flow; overshoot-capped.
@@ -260,8 +294,8 @@ export default {
         mass[j] += dm;
         const q = dm / dt;
 
-        driveGate(i, cantOut[i], q);   // giver's outer gate
-        driveGate(j, cantIn[j], q);    // receiver's inner gate
+        driveGate(i, shear[i], q, Pi, gw[i]);   // giver spun by its gate's shear
+        driveGate(j, shear[j], q, Pi, gw[j]);   // receiver spun by its gate's shear
 
         const Ii = (shell[i] + mass[i]) * rMid[i] * rMid[i];
         const Ij = (shell[j] + mass[j]) * rMid[j] * rMid[j];
@@ -282,15 +316,12 @@ export default {
           let dm = Math.min((QMAX / viscosity) * Pi * dt * cap[i], mass[i]);
           mass[i] -= dm;
           const q = dm / dt;
-          driveGate(i, cantOut[i], q);
+          driveGate(i, shear[i], q, Pi, gw[i]);
           const bv = Math.min(1, q * BURST_SCALE);
           if (bv > ventBurst) ventBurst = bv;
           if (bv > burst[i]) burst[i] = bv;
         }
       }
-
-      // Pressure safety clamp (keeps the sim finite in degenerate configs).
-      for (let i = 0; i < N; i++) if (mass[i] > cap[i] * PMAX) mass[i] = cap[i] * PMAX;
 
       // Advance rotations — every ring spins per its own gates, from rest.
       for (let i = 0; i < N; i++) phi[i] = wrap(phi[i] + omega[i] * dt);
@@ -342,16 +373,15 @@ export default {
       const pitchPx = rOuterPx / ringCount;
       uArr[0] = cw; uArr[1] = ch; uArr[2] = t; uArr[3] = ringCount;
       uArr[4] = rOuterPx; uArr[5] = pitchPx; uArr[6] = borderFrac * pitchPx;
-      uArr[7] = gateHalfArc * rOuterPx;
+      uArr[7] = 0;   // (unused — gate width is now per-ring in storage.gw)
       uArr[8] = colorRGB[0]; uArr[9] = colorRGB[1]; uArr[10] = colorRGB[2];
-      // Highest pressure across the (dynamic) outer rings — drives a global
-      // liquid-alpha so the whole liquid breathes with the system's load.
-      let sysP = 0;
-      for (let i = 1; i < ringCount; i++) { const f = mass[i] / cap[i]; if (f > sysP) sysP = f; }
-      uArr[11] = sysP;
+      // Centre-ring pressure — the shader normalises every ring's liquid alpha to
+      // this, so the centre reads fully opaque and each outer ring's transparency
+      // is proportional to its pressure relative to the centre.
+      uArr[11] = mass[0] / cap[0];
       uArr[12] = liquidFade; uArr[13] = ventBurst;
-      uArr[14] = wrap(phi[ringCount - 1] + beta[ringCount - 1]);
-      uArr[15] = 1;   // reserved (per-gate cant now carries its own sign)
+      uArr[14] = wrap(outAng(ringCount - 1));   // vent = outermost ring's outlet base
+      uArr[15] = numShearLines;                 // gates per ring (M)
       device.queue.writeBuffer(ubuf, 0, uArr);
 
       // ---- per-ring storage ----
@@ -359,12 +389,12 @@ export default {
         const o = i * 8;
         sArr[o] = phi[i];
         sArr[o + 1] = omega[i];
-        sArr[o + 2] = alpha[i];
-        sArr[o + 3] = beta[i];
+        sArr[o + 2] = g0[i];
+        sArr[o + 3] = shear[i];
         sArr[o + 4] = mass[i] / cap[i];
         sArr[o + 5] = burst[i];
-        sArr[o + 6] = cantIn[i];
-        sArr[o + 7] = cantOut[i];
+        sArr[o + 6] = gw[i];
+        sArr[o + 7] = 0;
       }
       device.queue.writeBuffer(sbuf, 0, sArr, 0, ringCount * 8);
 
@@ -422,10 +452,7 @@ export default {
       },
       getRingCount() { return ringCount; },
 
-      setSpin(w) { spin = w; },   // drive direction + vigour; live, no reset
-      getSpin() { return spin; },
-
-      setFlowRate(r) { flowRate = Math.max(0.02, Math.min(1.5, r)); },
+      setFlowRate(r) { flowRate = Math.max(0.01, Math.min(1000000, r)); },
       getFlowRate() { return flowRate; },
 
       setViscosity(v) { viscosity = Math.max(0.3, Math.min(4, v)); },
@@ -446,8 +473,23 @@ export default {
       },
       getBorderWidth() { return borderFrac; },
 
-      setGateWidth(w) { gateHalfArc = Math.max(0.03, Math.min(0.2, w)); },
-      getGateWidth() { return gateHalfArc; },
+      setShearLines(n) { numShearLines = Math.max(1, Math.min(8, Math.round(n))); },
+      getShearLines() { return numShearLines; },
+
+      // Width/orientation are min/max pairs; the min can't exceed the current
+      // max and the max can't drop below the current min (clamped here too, in
+      // case a caller bypasses the paired-slider UI).
+      setGateMin(f) { gateMinFrac = Math.max(0.005, Math.min(gateMaxFrac, f)); deriveGates(); },
+      getGateMin() { return gateMinFrac; },
+
+      setGateMax(f) { gateMaxFrac = Math.min(0.3, Math.max(gateMinFrac, f)); deriveGates(); },
+      getGateMax() { return gateMaxFrac; },
+
+      setOrientMin(d) { orientMin = Math.max(1, Math.min(orientMax, d)); deriveGates(); },
+      getOrientMin() { return orientMin; },
+
+      setOrientMax(d) { orientMax = Math.min(179, Math.max(orientMin, d)); deriveGates(); },
+      getOrientMax() { return orientMax; },
 
       setAutoReset(b) { autoReset = !!b; if (autoReset) held = false; },
       getAutoReset() { return autoReset; },
@@ -459,6 +501,13 @@ export default {
       getPressures() {
         const out = new Array(ringCount);
         for (let i = 0; i < ringCount; i++) out[i] = mass[i] / cap[i];
+        return out;
+      },
+
+      // Current per-ring angular speed (rad/s, signed). For the UI.
+      getSpeeds() {
+        const out = new Array(ringCount);
+        for (let i = 0; i < ringCount; i++) out[i] = omega[i];
         return out;
       },
     };

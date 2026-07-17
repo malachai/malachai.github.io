@@ -23,8 +23,10 @@ and **the gate's orientation sets the direction its ring spins**. Spin comes
 *only* from the moving liquid, emerging from zero; because each ring is driven
 by its own gates, rings may spin at different rates and directions (viscous
 coupling still pulls neighbours together, so they may partially sync rather
-than lock to one global rate). `spin` scales the drive rate and flips global
-direction; the outermost ring vents to the void so liquid keeps flowing.
+than lock to one global rate). Each ring's spin direction and rate come entirely
+from its gate orientation and the driving pressure — **there is no separate
+drive/spin control**. The outermost ring vents to the void so liquid keeps
+flowing.
 
 Mood: hypnotic clockwork-meets-plumbing. The pleasure is in gate near-misses,
 sudden bursts of transfer, and the slow emergence of order.
@@ -47,21 +49,36 @@ sudden bursts of transfer, and the slow emergence of order.
   so near-misses read as the two notches sliding past each other. The
   outermost wall (`k = N`) has only its inner half — ring `N-1`'s outer
   border — whose gate is the vent to the void.
-- **Gates** are arc-length-constant angular cutouts (a gate near the centre
-  subtends a larger angle than the same gate far out), with **hard, square
-  ends** (straight-sided slots, ~1px AA only). Their arc-length is
-  **configurable** (`setGateWidth`), shared by the sim's overlap test and the
-  shader. Ring `i`'s inner gate sits at `φ_i + α_i`, its outer gate at
-  `φ_i + β_i`; α/β are randomised on reset and fixed in the ring's frame.
-- **Gates are canted (angled), never radial, each with its own random
-  orientation.** Every gate carries a signed cant: magnitude randomised in
-  `[CMIN, CMAX]` (> 0, so no gate is ever perpendicular to the ring — always
-  some tangential force when liquid crosses it) and an **independent random
-  lean direction** (sign), so no two gates are alike (the range
-  `[CMIN, CMAX] = [0.35, 1.70]` is wide on purpose — ~19°–60° from radial — for
-  clearly varied angles). In the shader the signed
-  cant leans the slot across the wall (a slanted, still-hard-edged parallelogram
-  slot). In the sim only the *magnitude* couples flow to spin (see below).
+- **Gates are formed by `numShearLines` spiral "shear lines"** (`setShearLines`,
+  default 3) that start at the centre and spiral outward through the rings. Each
+  line cuts one gate per ring border, so every ring has `M = numShearLines`
+  evenly-spaced gates (2π/M apart). Within a ring the gate is **one continuous
+  sheared slot**: its centre shears with radius about the ring mid by the ring's
+  `shear` amount, so the inlet (inner border) and outlet (outer border) lie on
+  the same slot — their **left edges line up and their right edges line up**
+  (same angular width, so the inner opening is naturally a little smaller in
+  arc-length). The spiral base `g0` accumulates the shear outward so each ring's
+  outlet connects to the next ring's inlet (continuous lines at reset, when all
+  `φ_i = 0`).
+- **Gate orientation** is the **angle of the gate's sides**, set per ring by a
+  **min/max range in degrees** (`setOrientMin`/`setOrientMax`, 1°–179°, driven by
+  a single paired-thumb slider whose ends can't cross). The **shear lines locate
+  the gate's centre**; orientation then tilts the two sides of the slot about that
+  centre (90° = radial, sides straight; away from 90° the sides cant). Each ring
+  draws a random orientation in `[orientMin, orientMax]`; the orientation becomes
+  the ring's `shear`
+  (cant) as `shear = (orient − 90°)`, so **90° is a radial slot (zero shear, no
+  drive)**, below 90° leans one way and above 90° the other. This single control
+  replaces the old spiral-tightness slider and the random-shear checkbox — the
+  spread of the range *is* the per-ring variation, and keeping the range off 90°
+  guarantees every gate exerts some tangential force. `g0` still accumulates the
+  per-ring shear outward so the slots connect ring-to-ring.
+- **Gate width** is a **fraction of the circumference**, assigned per ring from a
+  **min/max range** (`setGateMin`/`setGateMax`, shown as %): each ring draws a
+  random width `gw` in `[gateMinFrac, gateMaxFrac]` (equal min = max → uniform
+  width). Hard square ends, ~1px AA. Half-width `= gw · π`; with M evenly-spaced
+  gates the sim folds the phase gap into the nearest gate and opens a pair by
+  `overlap = max(0, 1 − d/((gw_i + gw_j)·π))` (the two rings' half-widths).
 - Everything is resolution-relative, computed in-shader from a resolution
   uniform — there are **no size-dependent GPU resources**; `resize` is a
   no-op.
@@ -76,39 +93,52 @@ Per ring i: angle φ_i, angular velocity ω_i (**all start at 0**), shell mass
 `M_i = SHELL · r_mid,i` (outer rings heavier), liquid mass m_i, capacity cap_i
 (= channel area, the shared π dropped), pressure P_i = f_i = m_i/cap_i, moment
 of inertia `I_i = (M_i + m_i) · r_mid,i²`. Pressure P_i = m_i/cap_i is
-**uncapped** (can exceed 1). A gate drives its ring toward `VJET · spin · cant`
-— the target rate whose *direction is the gate's own signed orientation*.
+**uncapped** (can exceed 1). A gate drives its ring toward `VJET · cant · jetP ·
+(gw/GATE_REF)` — the target rate whose *direction is the gate's own signed
+orientation* and whose *magnitude is set by pressure and gate width* (no drive
+control).
 
 - **Liquid model — pressure, not centrifugal.** Liquid fills a channel
   volumetrically; its pressure is its fill P_i (uncapped). Rendered as the whole
   channel with opacity ∝ clamp(P_i) and extra white-hot brightness for
   over-pressure (P_i > 1); the centre core is a full disc.
-- **Centre as constant-flow pump + driven rotor (uncapped):** ring 0 injects
-  mass at `flowRate · cap_0 · INJECT` per second, tapering to 0 near a soft stall
-  `PSTALL` (finite pressure, no hard "full" ceiling; a `PMAX` clamp is a numeric
-  backstop only). The centre **rotates at `spin`** so its outlet gate sweeps —
-  necessary because a from-rest, fully-gated system can't self-start (no flow →
-  no spin → gates never align). It is the one driven element; the outer rings'
-  spin still emerges from their gates. Centre → ring 1 flows **only when the
-  centre outlet gate overlaps ring 1's inlet**, amount ∝ overlap (so on a fresh
-  reset ring 1 stays empty until the first alignment). `flowRate` sets pump
-  throughput, live.
+- **Centre (inner ring) — constant-flow pump, emergent spin (uncapped):** ring 0
+  is the pump but is **not driven at a fixed speed** — its rotation emerges
+  purely from the liquid flowing out through its own gate (`driveGate(0, …)`,
+  exactly like every other ring), so it depends on the flow and the gate shear.
+  Its outlet gate sweeps —
+  which lets the machine self-start (a from-rest, fully-gated system otherwise
+  can't) and finds ring 1's inlet on its own. It injects mass at a **constant**
+  `flowRate · cap_0 · INJECT` per second **regardless of back-pressure** — there
+  is no stall and no hard clamp. Pressure is instead bounded by physics: the
+  outer ring vents (ungated, ∝ pressure), so at steady state inflow = vent
+  outflow and every ring's pressure settles at a finite value (headless: peak
+  pressure ~linear in `flowRate`). Centre → ring 1 flows **only when the outlet
+  overlaps ring 1's inlet**, amount ∝ overlap (so on a fresh reset ring 1 stays
+  empty until the sweep reaches it). `flowRate` sets pump throughput, live.
 - **Pressure-driven transfer.** For an adjacent pair (i, i+1), flow runs only
   where `dP = P_i − P_{i+1} > 0`. Inter-ring flow is gated by gate alignment
   `o = max(0, 1 − |Δgate|/(2w))`, `w = gateHalfArc/r_b`; moved mass
   `dm = min(QMAX/viscosity·o·dP·dt·cap_i, m_i, dP·cap_i·cap_j/(cap_i+cap_j))`
   (last term = overshoot cap; receiver is **not** capped, so it can over-fill).
   The outermost ring vents to the void continuously.
-- **Canted gates impart spin, per their orientation.** While dm > 0 with flow
-  rate `q = dm/dt`, each gate the liquid crosses drives its ring toward
-  `VJET·spin·cant`: `ω += (VJET·spin·cant − ω) · min(0.5, KDRIVE·q·|cant|·dt)` —
-  applied to the giver (outer gate), the receiver (inner gate) and the vented
-  ring. The *direction* is the gate's signed cant, so a ring's spin direction
-  depends on its gates; a radial gate (cant → 0) would impart nothing. Different
-  gate orientations pull rings different ways, so the machine need not lock to a
-  single rate. The moving liquid additionally **viscously locks**
-  neighbours: both are nudged toward their inertia-weighted mean rate by
-  `min(0.5, KVISC·q·dt)`.
+- **Sheared gates impart spin — a function of pressure and gate width, uncapped.**
+  While dm > 0 with flow rate `q = dm/dt`, each gate drives its ring toward a
+  **terminal rate** `target = −VJET·shear·jetP·(gw/GATE_REF)`, where `shear`
+  is the ring's signed cant, `jetP` is the driving (giver) pressure and `gw` is
+  the ring's gate width (`GATE_REF = 0.03` is the reference width). There is **no
+  cap** on this target — a ring that keeps gaining pressure, or that has a wider
+  gate, keeps speeding up. The ring relaxes toward it at
+  `ω += (target − ω) · min(0.5, KDRIVE·q·|shear|·dt)`, applied to giver, receiver
+  and vented ring; because `q` itself grows with gate width (overlap) and
+  pressure (`dP`), a wider/higher-pressure gate also spins its ring up *faster*.
+  The *direction* is the shear's sign, negated so the induced spin matches the
+  gate's on-screen lean. A radial gate (90° → cant 0) imparts nothing. The moving
+  liquid additionally **viscously locks** neighbours: both are nudged toward
+  their inertia-weighted mean rate by `min(0.5, KVISC·q·dt)`. Rotation is bounded
+  in practice only by the pressure the physics actually reaches (below), not by
+  any fixed ceiling — headless it scales ~linearly with `flowRate` (flow 0.4 →
+  peak ω ≈ 2–3 rad/s; flow 1e6 → millions, finite).
 - **Emergent behaviour:** rings spin up from rest, each driven by its own gates
   and coupled by viscosity. Because gate orientations differ, rings can settle
   to different rates/directions rather than one global rate; pressure climbs and
@@ -132,23 +162,29 @@ of inertia `I_i = (M_i + m_i) · r_mid,i²`. Pressure P_i = m_i/cap_i is
   the sub-wall half-borders (minus their **canted, hard-edged** gate cutouts —
   the slot leans across the wall by `cantSign · cant`), the volumetric channel
   liquid, and the centre core. ~1px smoothstep AA on every edge. While a
-  transfer is active, **liquid is painted into the open gate** (coverage = wall
-  band × gate opening × flow intensity), so the flow is visible passing through
-  the gate, not just a glow. The outer vent gate streams liquid the same way.
-- **Per-ring state** (φ, ω, α, β, fill, burst, cantIn, cantOut) in a
-  `read-only` storage buffer sized for the max (24 rings), rewritten each frame.
-- **Style:** near-black background; borders light neutral grey with a subtle
-  radial shade; liquid the configurable colour with a faint shimmer advected by
-  ω (spin visible in the liquid). **Pressure feedback:** the whole channel
-  carries liquid whose brightness/opacity rises with fill and tinges toward
-  white-hot when highly loaded, so a ring's pressure reads at a glance (empties
-  read dark). **Global liquid alpha:** on top of the per-ring opacity, the whole
-  liquid's alpha scales continuously with the system's highest outer-ring
-  pressure (`sysPressure` uniform, `gAlpha = 0.30 + 0.70·sysP`) — the liquid
-  breathes with how loaded the machine is. Active transfers paint a bright
-  liquid jet through the open gate (plus a small glow accent); the outer vent
-  paints a brief fading streak beyond the last ring. No depth buffer, no meshes,
-  no instancing — the section's first pure-SDF piece.
+  transfer is active, the open gate is filled with the **average of the two
+  sides' rendered liquid** — each side = liquid colour over the background at
+  that ring's opacity (`fill/centreP`), averaged — so the result sits between the
+  two and is never brighter than either (no glow or flash). The outer vent gate
+  streams liquid the same way; there is **no additive vent glow** (a former
+  bright bloom beyond the last ring was removed).
+- **Per-ring state** (φ, ω, α, β, fill, burst, cantIn, cantOut, wIn, wOut — 10
+  f32, 40-byte stride) in a `read-only` storage buffer sized for the max (24
+  rings), rewritten each frame.
+- **Style:** near-black background. **Walls are a uniform grey that heats up
+  with rotation speed** — each half-wall reads its owning ring's |ω| and ramps
+  grey → red → yellow (with a hot glow) as `|ω| → HEATMAX`, so faster rings look
+  hotter. **Liquid is the selected colour** (no white bloom); its **alpha is
+  normalised to the CENTRE ring's pressure** (`u.centreP` = fill of ring 0) — the
+  **centre reads fully opaque** and every outer ring's transparency is
+  proportional to its pressure relative to the centre (an empty ring is fully
+  transparent). Because pressure falls off outward, the centre is normally the
+  system max, so rings fade outward as they lose pressure. Liquid has a faint
+  shimmer advected by ω (spin visible in the liquid). Active transfers show the
+  liquid crossing the open gate at normal brightness (no glow accent). The
+  outermost wall is cut **hard at `rOuter`** so no faint pixels bleed past the
+  last ring's edge (no ghost line around the vent gate). No depth buffer, no
+  meshes, no instancing — the section's first pure-SDF piece.
 
 ## Control surface
 
@@ -158,35 +194,40 @@ Extra instance methods beyond the contract, wired to the standalone page
 | Method | UI | Notes |
 |---|---|---|
 | `setRingCount(n)` / `getRingCount()` | slider (3–24) | Triggers a full reset |
-| `setSpin(w)` / `getSpin()` | slider (−1.5 – 1.5) | Drive rate scale (each gate targets `VJET·w·cant`); sign flips global direction, magnitude sets vigour; 0 = standstill. Live |
-| `setFlowRate(r)` / `getFlowRate()` | slider (0.05–1.2) | Centre pump throughput; live |
+| `setFlowRate(r)` / `getFlowRate()` | slider **log 0.01–1e6** | Centre pump throughput (the slider carries log10(flow)); live |
 | `setViscosity(v)` / `getViscosity()` | slider (0.3–4) | Higher = liquid equalises between rings more slowly (scales inter-ring/vent flow by 1/v); live |
 | `setColor(hex)` / `getColor()` | colour input | Liquid colour; uniform-only |
 | `setBorderWidth(f)` / `getBorderWidth()` | slider (0.15–0.5) | Fraction of ring pitch; live, fills preserved |
-| `setGateWidth(w)` / `getGateWidth()` | slider (0.03–0.2) | Gate half arc-length (normalised); live, no reset |
+| `setShearLines(n)` / `getShearLines()` | slider (1–8) | Number of spiral shear lines = gates per ring; live |
+| `setGateMin(f)` / `setGateMax(f)` (+ getters) | **paired-thumb** slider (0.5–30%) | Gate width range (fraction of circumference); per-ring width drawn in [min,max]; equal → uniform. Thumbs can't cross (min ≤ max, clamped in the setters too); live |
+| `setOrientMin(d)` / `setOrientMax(d)` (+ getters) | **paired-thumb** slider (1–179°) | Gate orientation range (angle of the sides); per-ring orientation drawn in [min,max]; 90° = radial (no spin). Thumbs can't cross; live |
 | `setAutoReset(b)` / `getAutoReset()` | checkbox | Default on |
 | `reset(seed?)` / `getSeed()` | button | Re-randomise and restart now |
-| `getPressures()` | — (read) | Current per-ring fill 0..1 (index 0 = core); feeds the pressure table |
+| `getPressures()` / `getSpeeds()` | — (read) | Current per-ring fill 0..1 and angular speed (rad/s, signed); feed the ring table |
 
-The standalone page also shows a **ring-pressure table** (top-left): one bar
-per ring (core + R1…R_{N-1}) showing its live pressure both as a **percentage**
-and as an **absolute value in kPa** (`KPA_FULL = 250` kPa at fill 1; **uncapped**, so
-back-pressure reads well above 250 while the bar clamps at 100%), polled from
-`getPressures()` on the page's own rAF and rebuilt when `ringCount` changes.
+The standalone page also shows a **ring table** (top-left): one row per ring
+(core + R1…R_{N-1}) with a palette-tinted bar and its live **pressure** (as a
+percentage and absolute kPa — `KPA_FULL = 250` kPa at fill 1, **uncapped**, so
+back-pressure reads well above 250 while the bar clamps at 100%) and its
+**speed** (rad/s, signed). Polled from `getPressures()`/`getSpeeds()` on the
+page's own rAF and rebuilt when `ringCount` changes; the bar colours mirror the
+shader's `ringColor`.
 
-Defaults: 8 rings, spin 0.6, flow 0.4, viscosity 1.0, liquid `#0058AB`,
-border 0.3, gate 0.03, auto-reset on. (With the small 0.03 gate, gate
-alignments are rare, so full sync is slow — headless ~20–25 min at defaults;
-raise `KDRIVE`/`KVISC`/`flow` or the gate size to hasten it.)
+Defaults: 8 rings, flow 0.4, viscosity 1.0, liquid `#0058AB`,
+border 0.3, 3 shear lines, gate width 2–5%, orientation 100–150°, auto-reset on.
+(With small gates, gate alignments are rare, so full sync is slow — headless
+~20–25 min at defaults; raise `KDRIVE`/`KVISC`/`flow` or the gate widths to
+hasten it.)
 
 ## Implementation notes
 
 - **Uniform `Globals` (64 B, 16 f32):** `res.xy`, `time`, `ringCount` |
-  `rOuter`, `pitch`, `borderW`(px), `gateHalfArc`(px) | `color.xyz`,
-  `sysPressure` | `liquidFade`, `ventBurst`, `ventAngle`, `reserved0`. `color` is
+  `rOuter`, `pitch`, `borderW`(px), `gateFrac`(unused) | `color.xyz`,
+  `centreP` | `liquidFade`, `ventBurst`, `ventAngle`, `shearLines`. `color` is
   a vec3 at a 16-byte-aligned offset (32) — no manual padding needed because
-  the two preceding vec4-worths fill exactly. **Per-ring `Ring` (32 B, 8
-  f32):** `phi, omega, alpha, beta, fill, burst, cantIn, cantOut`; storage array
+  the two preceding vec4-worths fill exactly. `gateFrac` (slot 7) is now unused —
+  gate width is per-ring in the storage buffer (`Ring.gw`). **Per-ring `Ring`
+  (32 B, 8 f32):** `phi, omega, g0, shear, fill, burst, gw, p7`; storage array
   stride is 32 (all f32), matching the JS writes.
 - **Tunable sim constants** (top of `doodle.js`): `QMAX`, `VJET` (Ω scale),
   `KDRIVE` (gate spin drive), `KVISC` (neighbour lock), `SHELL`, `CMIN/CMAX`
@@ -239,8 +280,47 @@ driven-centre design):
    globally sync — an accepted trade for physically honest gates.
 9. **Uncapped pressure.** The centre is a constant-flow pump; ring pressure is
    not clamped at capacity, so real back-pressure builds and the table reads
-   past 250 kPa. A soft pump stall + hard `PMAX` keep it finite (no true
-   infinity is possible with a steady pump and a bottleneck).
+   past 250 kPa. Bounded by the ungated outer vent (a linear drain), not by any
+   ceiling — see decision 14, which removed the earlier stall/clamp.
+
+Revised 2026-07-17 (gate controls + final-ring cleanup):
+
+10. **Gate width is a min/max range, per ring.** `setGateMin`/`setGateMax` (as %
+    of circumference); each ring draws a random width in the range (equal → uniform).
+    Overlap uses the two rings' summed half-widths `(gw_i+gw_j)·π`. `Ring.gw`
+    (storage slot 6) carries it; the old uniform `gateFrac` uniform (slot 7) is
+    now unused.
+11. **Gate orientation is a min/max range (1°–179°), replacing spiral tightness +
+    random-shear.** Each ring draws a random orientation in `[orientMin, orientMax]`;
+    `shear = orient − 90°`, so 90° is radial (no spin) and the range's spread is the
+    per-ring variation. `setSpiral`/`setShearRandom` and the `dirSign` array are gone.
+12. **Liquid alpha normalised to the CENTRE ring** (`u.centreP` = ring 0's fill),
+    not the system max. The centre reads fully opaque; every outer ring's
+    transparency is its pressure ÷ the centre's. Gate-fill sides use the same
+    denominator.
+13. **Vent glow removed; outer rim hard-cut.** The additive bright bloom beyond
+    the last ring is gone (the vent now shows only through the wall's gate fill),
+    and the outermost wall band is clamped hard at `rOuter` so no faint pixels
+    ghost past the last gate's edge.
+14. **Rotation = f(pressure, gate width); no artificial ceilings.** The drive
+    terminal rate is `VJET·cant·jetP·(gw/GATE_REF)` — proportional to the
+    driving pressure and the gate width — and is no longer clamped (`WMAX` gone).
+    Pressure is no longer clamped either: the pump injects at a constant rate with
+    no soft stall and no hard `PMAX`; the ungated outer vent provides the linear
+    drain that gives a finite steady state. Headless verification: finite across
+    seeds and 600 s runs, with peak pressure and peak ω scaling ~linearly with
+    `flowRate` (e.g. flow 1e6 → ω in the millions, still finite).
+15. **`drive`/`spin` control removed.** Spin direction and rate now come solely
+    from gate orientation (the cant's sign and size) and the driving pressure ×
+    gate width — there is no global drive knob. `setSpin`/`getSpin` and the slider
+    are gone; `VJET` is a fixed internal gain.
+16. **Width & orientation are paired-thumb range sliders.** Each is one control
+    with two thumbs that cannot cross (min ≤ max, also clamped in the setters).
+    **Orientation clarified:** the shear lines locate the gate's *centre*;
+    orientation sets the *angle of the sides* (the slot's tilt about that centre),
+    90° being a straight radial slot. (The shear-line spiral that connects one
+    ring's outlet to the next ring's inlet is still built from the per-ring cant,
+    so tilted gates line up across walls and the machine self-starts.)
 
 ## Ideas
 
