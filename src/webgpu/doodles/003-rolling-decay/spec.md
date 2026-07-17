@@ -1,11 +1,21 @@
 # 003-rolling-decay — Rolling Decay
 
-- **Status:** wip (spec agreed — not yet implemented)
+- **Status:** wip (first implementation landed 2026-07-17 — choreography +
+  analytic reflections; dynamic environment-cubemap deferred; awaiting first
+  on-hardware run)
 - **Created:** 2026-07-17
 - **Tags:** mesh, 3d, simulation, instanced, generative, reflection
 
 *(Slug is a placeholder — rename before first publish; it becomes the
 permalink.)*
+
+> **Build note (2026-07-17):** the choreography is fully implemented — board,
+> rolling/decay/strand/reset, instanced squares & cubes, depth buffer, orbit
+> camera, cosine palettes, full control panel. Reflections in this first pass
+> are the **analytic environment only** (the escape/fallback layer below); the
+> dynamic 6-face cubemap probe with box-projection parallax is a deliberate
+> follow-up. Everything described under "cubemap" in Reflections is therefore
+> not yet live. See "Build status & divergences" under Implementation notes.
 
 ## Intent
 
@@ -172,6 +182,60 @@ Defaults: 12×12 grid, 6 cubes, 1.5 iters/sec, Classic palette, mosaic 0.
 - Mind uniform alignment for the palette block and the per-face cubemap
   view-projection matrices (overarching spec §9).
 - Nothing may rely on identifier names surviving minification (spec §3).
+
+### Build status & divergences (first implementation, 2026-07-17)
+
+What's live and how it maps to the brief above, plus where the code diverges —
+all pending a first on-hardware run (the analytic material especially will want
+tuning, spec §1):
+
+- **Reflections: analytic only.** Cubes shade from the analytic environment
+  (sky gradient + palette-tinted ground + three fake strip lights + fresnel +
+  Blinn specular, gently tonemapped) — i.e. exactly the escape/fallback layer,
+  which is also the intended `quality < 1` path. The 6-face dynamic cubemap
+  probe, box-projection parallax, and one-bounce scene render are **not built
+  yet**; cubes currently reflect a studio environment, not the actual board.
+  This is the single biggest follow-up and the reason cube-reflects-board reads
+  as "chrome in a room" rather than "mirror of the decay" for now.
+- **Cube matrices on the CPU, snapped to the 24.** Per-frame model =
+  `T(pivot)·R(axis,θ)·T(−pivot)·T(A)·O_A` for rolls, `T(A)·R_y(θ)·O_A` for
+  strand yaws; on the iteration boundary the 90° turn folds into `O` and snaps
+  to the nearest of the 24 axis-aligned rotations (`buildRot24`/`snap24`).
+  Verified numerically: centres land exactly on the target cell and every fold
+  stays axis-aligned (cube rests flat). Roll-direction sign table lives in
+  `DIRS`.
+- **Iteration clock is phase-derived** (accumulator + `interval = 1/speed`),
+  so pause/resume and reduced-motion single-frame render coherent poses. Sink
+  depth, roll θ, yaw and the rise wave are all functions of phase / continuous
+  tick.
+- **Sinking:** a vacated cell sinks over `SINK_ITERS = 4` iterations to
+  `SINK_DIST = 5` world units, then is `gone` (skipped by the renderer);
+  squares fade toward the background as they descend. Descent is tied to
+  iteration count (not wall-clock), so tempo doesn't change the choreography.
+- **Reset trigger & hold:** fires when every cube is stranded in one iteration;
+  holds ~2–3 spinning iterations (`HOLD_ITERS = 2`, plus the detecting
+  iteration), then a time-based rise (`RISE_DUR = 1.5 s`) staggered by distance
+  from centre, then re-scatter. **Divergence:** at the transition into the rise
+  the cubes snap from mid-spin to their resting orientation rather than easing
+  out — acceptable for now, worth smoothing later.
+- **Grid / cube-count edits do an *instant* re-scatter** at the next iteration
+  boundary (full board rebuilt, cubes re-placed), **not** the rise-wave
+  animation — animating a rise of a differently-sized board is odd. The
+  `reset()` button *does* play the rise choreography. Speed/palette/mosaic are
+  live with no reset.
+- **Max-allocation buffers:** square storage sized 32×32, cube storage 64;
+  draws use instance sub-ranges, so grid/count changes never recreate GPU
+  resources. Depth texture is the only size-dependent resource (lazy, recreated
+  on resize, destroyed in `destroy`).
+- **Geometry:** squares are a thin box (`y ∈ [−0.14, 0]`, footprint 0.92·pitch
+  so gaps read); cubes a unit box with per-face normals (24 verts) for the
+  reflection lighting. `cullMode: "none"` on both — cheap at this vertex count,
+  sidesteps winding bugs, depth resolves occlusion.
+- **Not bevelled yet** (Ideas) — cubes are hard-edged; the chamfer that "sells
+  metal" is a follow-up alongside the cubemap.
+- **Uniform block** is `viewProj(64) + camPos(16) + palA/B/C/D(64) +
+  params(16) + light(16) = 176 B`; the doodle owns `group(0)` bindings 0–2
+  (uniform, square storage, cube storage).
 
 ## Ideas
 
