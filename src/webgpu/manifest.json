@@ -31,6 +31,21 @@
       "thumbnail": null
     },
     {
+      "slug": "003-rolling-decay",
+      "path": "doodles/003-rolling-decay/",
+      "title": "Rolling Decay",
+      "description": "Shiny cubes tip square-by-square across a chessboard, sinking the floor behind them until every cube is stranded.",
+      "tags": [
+        "mesh",
+        "3d",
+        "simulation",
+        "instanced",
+        "generative"
+      ],
+      "created": "2026-07-17",
+      "thumbnail": null
+    },
+    {
       "slug": "004-ring-sync",
       "path": "doodles/004-ring-sync/",
       "title": "Ring Sync",
