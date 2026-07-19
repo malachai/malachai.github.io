@@ -10,8 +10,9 @@
 permalink.)*
 
 > **Build note (2026-07-17):** the choreography is fully implemented — board,
-> rolling/decay/strand/reset, instanced squares & cubes, depth buffer, orbit
-> camera, cosine palettes, full control panel. Reflections in this first pass
+> rolling/decay, strand→fade→die, generational respawn, consume-to-reset,
+> instanced squares & cubes, depth buffer, orbit camera, cosine palettes, full
+> control panel (grid to 1000). Reflections in this first pass
 > are the **analytic environment only** (the escape/fallback layer below); the
 > dynamic 6-face cubemap probe with box-projection parallax is a deliberate
 > follow-up. Everything described under "cubemap" in Reflections is therefore
@@ -41,8 +42,8 @@ Mood: clean, mechanical, slightly ominous. The satisfaction is in the crisp
 State lives in JS; the GPU only draws. One **iteration** every
 `1 / speed` seconds (`speed` = iterations per second, configurable).
 
-Grid: `gridX × gridY` cells (each axis configurable, 2–32). Each cell is one
-of: **alive** (valid to stand on / roll onto), **sinking** (animating
+Grid: `gridX × gridY` cells (each axis configurable, **2–1000**). Each cell is
+one of: **alive** (valid to stand on / roll onto), **sinking** (animating
 downward, invalid), or **gone** (fully out of view, invalid).
 
 Per iteration:
@@ -56,24 +57,34 @@ Per iteration:
    and begin a **roll**: a 90° rotation about the shared ground edge, eased
    (smoothstep) over the first ~70% of the iteration interval, the remainder
    a dwell. The vacated cell flips to **sinking** the moment the roll starts.
-4. If the cube has no valid target: it is **stranded** — it yaws 90° about
-   its vertical axis this iteration (same easing). The cell it stands on
-   stays alive beneath it (it never vacates it).
-5. **Stranded is re-evaluated every iteration, never latched** (agreed). A
-   cube blocked only by an occupied neighbour becomes mobile again if that
-   neighbour rolls away.
+   Rolling resets the cube to fully opaque.
+4. If the cube has no valid target: it is **stranded** — it yaws 90° about its
+   vertical axis this iteration (same easing) **and fades**. A cube fades to
+   nothing over `FADE_STEPS = 5` consecutive stranded iterations; the moment it
+   reaches full transparency it is removed, and the square it was standing on
+   flips to **sinking** (the floor consumes the spot it died on).
+5. **Fade is per-consecutive-strand, not latched to death:** a cube blocked
+   only transiently (a neighbour occupied this turn) fades a step, but the
+   instant it can move again it rolls and snaps back to full opacity. Only a
+   cube stranded five turns *in a row* actually dies. (This supersedes the
+   original "spins forever" behaviour.)
 
 Sinking: a sinking cell descends at a fixed world rate over ~4 iterations,
 then flips to **gone** (skipped by the renderer). Descent speed scales with
 iteration speed so the choreography reads the same at any tempo.
 
-Reset: **when all cubes are stranded in the same iteration** (agreed), hold
-for ~2 iterations (everyone spinning), then reset: all cells rise back to
-the surface over ~1.5s, staggered by distance from centre for a wave; cubes
-re-scatter to distinct random cells, orientations reset. Normal iterations
-resume.
+**Generations & reset (revised):** the board is *not* reset when cubes strand.
+Instead cubes strand, fade, die, and consume their squares until a whole
+generation has died off (`live == 0`). If **alive squares still remain**, a
+fresh generation drops onto random surviving squares and play continues —
+no board reset. Only when the board is **fully consumed** (no alive squares
+left) does the full reset fire: all cells rise back to the surface over ~1.5s,
+staggered by distance from centre for a wave, then a fresh full board is
+scattered. The manual `reset()` button triggers this rise immediately.
 
 Cube count `n` (1–64) is clamped to `gridX·gridY`; spawn cells are distinct.
+Each respawned generation uses the same `n`, clamped to the surviving square
+count.
 
 ### Rendering
 
@@ -152,7 +163,7 @@ Extra instance methods beyond the contract, wired to the standalone page
 
 | Method | UI | Notes |
 |---|---|---|
-| `setGrid({x, y})` / `getGrid()` | two sliders (2–32) | Triggers a full reset (dirty flag; applied at next iteration boundary) |
+| `setGrid({x, y})` / `getGrid()` | two sliders (2–1000) | Instant re-scatter at the next iteration boundary; square storage grows to fit |
 | `setCubeCount(n)` / `getCubeCount()` | slider (1–64, clamped to grid area) | Full reset, as above |
 | `setSpeed(itersPerSec)` / `getSpeed()` | slider (0.25–8) | Takes effect next iteration; no reset |
 | `setPalette(name)` / `getPalette()` / `paletteNames` | dropdown | Uniform-only |
@@ -212,21 +223,31 @@ tuning, spec §1):
   `SINK_DIST = 5` world units, then is `gone` (skipped by the renderer);
   squares fade toward the background as they descend. Descent is tied to
   iteration count (not wall-clock), so tempo doesn't change the choreography.
-- **Reset trigger & hold:** fires when every cube is stranded in one iteration;
-  holds ~2–3 spinning iterations (`HOLD_ITERS = 2`, plus the detecting
-  iteration), then a time-based rise (`RISE_DUR = 1.5 s`) staggered by distance
-  from centre, then re-scatter. **Divergence:** at the transition into the rise
-  the cubes snap from mid-spin to their resting orientation rather than easing
-  out — acceptable for now, worth smoothing later.
+- **Strand → fade → die → respawn → consume-to-reset** (revised per feedback
+  2026-07-17, see Simulation above): stranded cubes fade over `FADE_STEPS = 5`
+  consecutive strands (per-instance opacity via the widened cube instance +
+  alpha blending on the cube pipeline), then vanish and sink their square. When
+  a whole generation dies, a fresh one respawns on random surviving squares; the
+  full rise-reset (`RISE_DUR = 1.5 s`, centre-out stagger) fires only when no
+  alive squares remain. Validated headlessly (`sim.mjs`): deaths cap at exactly
+  5 spins, mid-generation respawns and consume-to-reset both occur, and every
+  live cube always rests on an alive cell.
 - **Grid / cube-count edits do an *instant* re-scatter** at the next iteration
   boundary (full board rebuilt, cubes re-placed), **not** the rise-wave
-  animation — animating a rise of a differently-sized board is odd. The
-  `reset()` button *does* play the rise choreography. Speed/palette/mosaic are
-  live with no reset.
-- **Max-allocation buffers:** square storage sized 32×32, cube storage 64;
-  draws use instance sub-ranges, so grid/count changes never recreate GPU
-  resources. Depth texture is the only size-dependent resource (lazy, recreated
-  on resize, destroyed in `destroy`).
+  animation. The `reset()` button *does* play the rise choreography.
+  Speed/palette/mosaic are live with no reset.
+- **Transparency divergence:** fading cubes use standard alpha blend with depth
+  write still on, so an occasional fading cube can blend slightly wrong against
+  another cube directly behind it. Cubes are packed opaque-first each frame to
+  minimise this; it's an accepted artifact at this scale.
+- **Growable square storage:** grids run up to 1000×1000, so the square storage
+  buffer and the board arrays (`cellState`/`sinkAt`/`riseFrom`) are allocated to
+  the current grid and grown when it increases (rebuilding the bind group),
+  rather than always reserving the maximum — a 1000² board is a 16 MB instance
+  buffer and ~1 M CPU-side cells per frame, so **very large grids are heavy**
+  (both the per-frame cell sweep in JS and the instance draw). Cube storage
+  stays fixed at 64. Depth texture is the only other size-dependent resource
+  (lazy, recreated on resize, destroyed in `destroy`).
 - **Geometry:** squares are a thin box (`y ∈ [−0.14, 0]`, footprint 0.92·pitch
   so gaps read); cubes a unit box with per-face normals (24 verts) for the
   reflection lighting. `cullMode: "none"` on both — cheap at this vertex count,

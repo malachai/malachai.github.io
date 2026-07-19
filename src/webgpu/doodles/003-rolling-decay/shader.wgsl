@@ -24,8 +24,8 @@ struct Globals {
 struct SquareInst { d : vec4<f32> };
 @group(0) @binding(1) var<storage, read> squares : array<SquareInst>;
 
-// Cube instance: model matrix.
-struct CubeInst { m : mat4x4<f32> };
+// Cube instance: model matrix + tint (tint.x = opacity, used while fading out).
+struct CubeInst { m : mat4x4<f32>, tint : vec4<f32> };
 @group(0) @binding(2) var<storage, read> cubes : array<CubeInst>;
 
 const TAU = 6.2831853;
@@ -75,6 +75,7 @@ struct CubeOut {
   @builtin(position) pos : vec4<f32>,
   @location(0) nrm : vec3<f32>,
   @location(1) world : vec3<f32>,
+  @location(2) @interpolate(flat) op : f32,
 };
 
 @vertex
@@ -87,6 +88,7 @@ fn vs_cube(@location(0) position : vec3<f32>,
   out.pos = U.viewProj * world;
   out.nrm = (m * vec4<f32>(normal, 0.0)).xyz;   // model is rotation+translation, no scale
   out.world = world.xyz;
+  out.op = cubes[ii].tint.x;
   return out;
 }
 
@@ -140,5 +142,5 @@ fn fs_cube(in : CubeOut) -> @location(0) vec4<f32> {
 
   // Gentle tonemap so the glints don't blow out hard.
   col = col / (col + vec3<f32>(0.7)) * 1.4;
-  return vec4<f32>(col, 1.0);
+  return vec4<f32>(col, in.op);
 }

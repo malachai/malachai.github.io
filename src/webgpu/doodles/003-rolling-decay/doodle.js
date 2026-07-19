@@ -1,7 +1,10 @@
 // @ts-check
 // 003-rolling-decay — shiny cubes tip square-by-square across a chessboard,
-// consuming the floor behind them until every cube is stranded, then the board
-// rises and it begins again.
+// consuming the floor behind them. A cube with nowhere to roll spins in place
+// and slowly fades out; when it vanishes the square beneath it falls too. When
+// a whole generation of cubes has faded away a fresh batch drops onto random
+// surviving squares, and only once the board is entirely consumed does it rise
+// back up and begin again.
 //
 // The CPU owns the whole simulation (grid state, cube orientations, the
 // iteration clock); the GPU only draws. Two instanced pipelines share one
@@ -11,8 +14,8 @@
 // environment-free (no top-level DOM/navigator) so build-manifest can import
 // it in Node — see spec.md §5.
 //
-// FIRST STAB: reflections are the analytic environment only (sky + palette-
-// tinted ground + fake strip lights + fresnel/specular). The dynamic
+// FIRST STAB (still): reflections are the analytic environment only (sky +
+// palette-tinted ground + fake strip lights + fresnel/specular). The dynamic
 // environment-cubemap probe described in the doodle spec is a deliberate
 // follow-up; the choreography lives here first.
 
@@ -28,12 +31,12 @@ const SQ_BOT = -0.14;       // square underside (sides read while sinking)
 const ROLL_FRAC = 0.7;      // fraction of an iteration spent moving; rest dwells
 const SINK_ITERS = 4.0;     // iterations a vacated square takes to fully sink
 const SINK_DIST = 5.0;      // world depth a fully-sunk square has descended
-const HOLD_ITERS = 2;       // iterations everyone spins before the board resets
+const FADE_STEPS = 5;       // spinning iterations a stranded cube takes to vanish
 const RISE_DUR = 1.5;       // seconds the board takes to rise back up
 const ORBIT_RATE = 0.05;    // camera yaw (rad/s)
 
-const MAX_GRID = 32;        // storage buffers allocated for the maximum board…
-const MAX_CUBES = 64;       // …and the maximum cube count; draws use sub-ranges
+const MAX_GRID = 1000;      // grid axes clamp here; square storage grows to fit
+const MAX_CUBES = 64;       // cube storage is allocated for this many
 
 // ---------------------------------------------------------------------------
 // Cosine-gradient palette presets (IQ):  color(t) = a + b·cos(2π(c·t + d))
@@ -134,11 +137,9 @@ function buildRot24() {
   for (const p of perms) {
     for (let bits = 0; bits < 8; bits++) {
       const sgn = [bits & 1 ? -1 : 1, bits & 2 ? -1 : 1, bits & 4 ? -1 : 1];
-      // Column c of the 3×3 is basis vector e_{p[c]} scaled by sgn[c].
       const m = new Float32Array(16);
       m[15] = 1;
       for (let col = 0; col < 3; col++) m[col * 4 + p[col]] = sgn[col];
-      // Determinant of the 3×3 (must be +1 for a proper rotation).
       const det =
         m[0] * (m[5] * m[10] - m[6] * m[9]) -
         m[4] * (m[1] * m[10] - m[2] * m[9]) +
@@ -154,7 +155,6 @@ const ROT24 = buildRot24();
 function snap24(m) {
   let best = ROT24[0], bestScore = -Infinity;
   for (const cand of ROT24) {
-    // Frobenius inner product of the 3×3 blocks; maximised by the closest.
     let s = 0;
     for (let col = 0; col < 3; col++)
       for (let row = 0; row < 3; row++)
@@ -176,7 +176,7 @@ export default {
   meta: {
     title: "Rolling Decay",
     description:
-      "Shiny cubes tip square-by-square across a chessboard, sinking the floor behind them until every cube is stranded.",
+      "Shiny cubes tip square-by-square across a chessboard, fading out when stranded and sinking the floor behind them until nothing is left.",
     tags: ["mesh", "3d", "simulation", "instanced", "generative"],
     created: "2026-07-17",
     prefersReducedMotionSafe: false,
@@ -194,16 +194,20 @@ export default {
       size: 176,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    // Square instances: one vec4 each (centreX, centreZ, sinkY, t).
-    const sqBuf = device.createBuffer({
-      size: MAX_GRID * MAX_GRID * 16,
-      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-    });
-    // Cube instances: one mat4 each (model).
+    // Cube instances: mat4 model (64) + vec4 tint (16) = 80 bytes each.
     const cubeBuf = device.createBuffer({
-      size: MAX_CUBES * 64,
+      size: MAX_CUBES * 80,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
     });
+    // Square instances (one vec4 each) are allocated lazily by ensureSqCapacity,
+    // sized to the current grid — grids can be huge (up to 1000²) so we grow to
+    // fit rather than always reserving the maximum.
+    let sqBuf = null;
+    let sqCap = 0;                // capacity in instances
+    let sqArr = new Float32Array(0);
+    let cellState = new Uint8Array(0);   // 0=alive, 1=sinking, 2=gone
+    let sinkAt = new Float32Array(0);    // continuous-tick a cell began sinking
+    let riseFrom = new Float32Array(0);  // depth captured at rise start
 
     const bgl = device.createBindGroupLayout({
       entries: [
@@ -212,16 +216,19 @@ export default {
         { binding: 2, visibility: GPUShaderStage.VERTEX, buffer: { type: "read-only-storage" } },
       ],
     });
-    const bindGroup = device.createBindGroup({
-      layout: bgl,
-      entries: [
-        { binding: 0, resource: { buffer: ubuf } },
-        { binding: 1, resource: { buffer: sqBuf } },
-        { binding: 2, resource: { buffer: cubeBuf } },
-      ],
-    });
-    const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
+    let bindGroup = null;
+    function rebuildBindGroup() {
+      bindGroup = device.createBindGroup({
+        layout: bgl,
+        entries: [
+          { binding: 0, resource: { buffer: ubuf } },
+          { binding: 1, resource: { buffer: sqBuf } },
+          { binding: 2, resource: { buffer: cubeBuf } },
+        ],
+      });
+    }
 
+    const pipelineLayout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
     const DEPTH_FORMAT = "depth24plus";
     const vertexBuffers = [{
       arrayStride: 24,
@@ -230,15 +237,19 @@ export default {
         { shaderLocation: 1, offset: 12, format: "float32x3" },  // normal
       ],
     }];
-    const makePipe = (vs, fs) => device.createRenderPipeline({
+    const makePipe = (vs, fs, blend) => device.createRenderPipeline({
       layout: pipelineLayout,
       vertex: { module, entryPoint: vs, buffers: vertexBuffers },
-      fragment: { module, entryPoint: fs, targets: [{ format }] },
+      fragment: { module, entryPoint: fs, targets: [{ format, blend }] },
       primitive: { topology: "triangle-list", cullMode: "none" },
       depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: "less" },
     });
-    const sqPipe = makePipe("vs_sq", "fs_sq");
-    const cubePipe = makePipe("vs_cube", "fs_cube");
+    const sqPipe = makePipe("vs_sq", "fs_sq", undefined);
+    // Cubes can be partially transparent while fading; standard alpha blend.
+    const cubePipe = makePipe("vs_cube", "fs_cube", {
+      color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
+      alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+    });
 
     // ---- static geometry -------------------------------------------------
     function makeBox(x0, x1, y0, y1, z0, z1) {
@@ -271,8 +282,7 @@ export default {
     const cubeMesh = uploadGeo(cubeGeo);
 
     // Depth texture is size-dependent: created lazily, recreated on resize.
-    let depthTex = null;
-    let depthW = 0, depthH = 0;
+    let depthTex = null, depthW = 0, depthH = 0;
     function ensureDepth(w, h) {
       if (depthTex && depthW === w && depthH === h) return;
       depthTex?.destroy();
@@ -284,45 +294,47 @@ export default {
       depthW = w; depthH = h;
     }
 
+    // Square storage / board arrays grow to fit the current grid.
+    function ensureSqCapacity(n) {
+      if (sqBuf && n <= sqCap) return;
+      sqCap = n;
+      sqBuf?.destroy();
+      sqBuf = device.createBuffer({ size: n * 16, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+      sqArr = new Float32Array(n * 4);
+      cellState = new Uint8Array(n);
+      sinkAt = new Float32Array(n);
+      riseFrom = new Float32Array(n);
+      rebuildBindGroup();
+    }
+
     // ---- controls (defaults look good unattended) ------------------------
     let gridX = 12, gridY = 12;
     let cubeCount = 6;
     let speed = 1.5;              // iterations / second
     let paletteIdx = 0;
     let mosaic = 0.0;
-    let palOverride = null;       // set by randomPalette(); overrides paletteIdx
+    let palOverride = null;
 
-    // Queued reconfig (grid / cube-count changes apply at the next boundary).
     let dirtyReconfig = false;
     let pendingGridX = gridX, pendingGridY = gridY, pendingCount = cubeCount;
 
     // ---- simulation state ------------------------------------------------
-    // Cells: state 0=alive, 1=sinking, 2=gone. sinkAt = continuous-tick at which
-    // it began sinking. Flat arrays indexed idx = cz*gridX + cx.
-    let cellState = new Uint8Array(MAX_GRID * MAX_GRID);
-    let sinkAt = new Float32Array(MAX_GRID * MAX_GRID);
-    let riseFrom = new Float32Array(MAX_GRID * MAX_GRID); // captured depth at rise start
-
-    // Cubes: current resting cell (cx,cz), orientation O (mat4, one of ROT24),
-    // and the action animating through the current iteration.
-    const cubes = [];
-    for (let i = 0; i < MAX_CUBES; i++) {
-      cubes.push({ cx: 0, cz: 0, O: identity(), action: null });
-    }
+    // A cube: resting cell, orientation O (one of ROT24), current-iteration
+    // action, and `spins` = consecutive stranded iterations (drives the fade).
+    /** @type {Array<{cx:number,cz:number,O:Float32Array,action:any,spins:number}>} */
+    let live = [];
 
     let tick = 0;                 // completed iterations
     let acc = 0;                  // seconds into the current iteration
     let mode = "run";             // "run" | "rise"
     let riseTimer = 0;
-    let resetHold = 0;            // iterations of spinning left before a rise
 
+    const interval = () => 1 / speed;
     const cellIdx = (cx, cz) => cz * gridX + cx;
     const cellWorld = (cx, cz) => [
       (cx - (gridX - 1) / 2) * PITCH,
       (cz - (gridY - 1) / 2) * PITCH,
     ];
-
-    // Continuous depth a cell has sunk (world units); 0 for alive.
     function cellDepth(cx, cz) {
       const idx = cellIdx(cx, cz);
       const st = cellState[idx];
@@ -331,10 +343,7 @@ export default {
       const elapsed = (tick + acc / interval()) - sinkAt[idx];
       return Math.min(1, elapsed / SINK_ITERS) * SINK_DIST;
     }
-    const interval = () => 1 / speed;
 
-    // Simple RNG (Math.random is allowed at runtime; determinism isn't required
-    // here — resets re-scatter freshly by design).
     const shuffled = (n) => {
       const a = Array.from({ length: n }, (_, i) => i);
       for (let i = n - 1; i > 0; i--) {
@@ -344,29 +353,48 @@ export default {
       return a;
     };
 
-    // ---- placing / resetting the board ----------------------------------
+    function makeCube(cx, cz) {
+      return { cx, cz, O: identity(), action: null, spins: 0 };
+    }
+    // Pick `k` distinct cells (flat indices) from a candidate list.
+    function pickCells(candidates, k) {
+      const order = shuffled(candidates.length);
+      const out = [];
+      for (let i = 0; i < candidates.length && out.length < k; i++) out.push(candidates[order[i]]);
+      return out;
+    }
+    function allCellIndices() {
+      const a = new Array(gridX * gridY);
+      for (let i = 0; i < a.length; i++) a[i] = i;
+      return a;
+    }
+    function aliveCellIndices() {
+      const out = [];
+      const n = gridX * gridY;
+      for (let i = 0; i < n; i++) if (cellState[i] === 0) out.push(i);
+      return out;
+    }
+
     function clearBoard() {
       for (let i = 0; i < gridX * gridY; i++) { cellState[i] = 0; sinkAt[i] = 0; }
     }
-    function scatterCubes() {
-      const cells = shuffled(gridX * gridY).slice(0, cubeCount);
-      for (let i = 0; i < cubeCount; i++) {
-        const cx = cells[i] % gridX, cz = (cells[i] / gridX) | 0;
-        cubes[i].cx = cx; cubes[i].cz = cz;
-        cubes[i].O = identity();
-        cubes[i].action = null;
-      }
+    function spawnOn(cells) {
+      live = [];
+      for (const flat of cells) live.push(makeCube(flat % gridX, (flat / gridX) | 0));
+    }
+    function scatterFull() {
+      spawnOn(pickCells(allCellIndices(), Math.min(cubeCount, gridX * gridY)));
     }
     function applyReconfig() {
       gridX = pendingGridX; gridY = pendingGridY;
       cubeCount = Math.max(1, Math.min(pendingCount, gridX * gridY));
+      ensureSqCapacity(gridX * gridY);
       clearBoard();
-      scatterCubes();
-      tick = 0; acc = 0; resetHold = 0; mode = "run";
+      scatterFull();
+      tick = 0; acc = 0; mode = "run";
     }
 
-    // Roll geometry per direction: [dCx, dCz, axis, dir, pivotDx, pivotDz].
-    // axis 'z' θ:0→-90 rolls +X; 'z' +90 → -X; 'x' +90 → +Z; 'x' -90 → -Z.
+    // Roll geometry per direction: axis/dir and the pivot offset on the ground.
     const DIRS = [
       { dcx: 1, dcz: 0, axis: "z", dir: -1, pdx: 0.5, pdz: 0 },
       { dcx: -1, dcz: 0, axis: "z", dir: 1, pdx: -0.5, pdz: 0 },
@@ -374,122 +402,106 @@ export default {
       { dcx: 0, dcz: -1, axis: "x", dir: -1, pdx: 0, pdz: -0.5 },
     ];
 
-    function planIteration() {
-      // Grid / cube-count changes take effect on an iteration boundary.
-      if (dirtyReconfig) { dirtyReconfig = false; applyReconfig(); }
-
-      // During the post-collapse hold everyone just spins.
-      if (resetHold > 0) {
-        resetHold--;
-        for (let i = 0; i < cubeCount; i++) planYaw(i);
-        if (resetHold === 0) startRise();
-        return;
-      }
-
-      const occupied = new Set();
-      for (let i = 0; i < cubeCount; i++) occupied.add(cellIdx(cubes[i].cx, cubes[i].cz));
-      const claimed = new Set();
-
-      let allStranded = true;
-      for (const i of shuffled(cubeCount)) {
-        const c = cubes[i];
-        const targets = [];
-        for (const D of DIRS) {
-          const nx = c.cx + D.dcx, nz = c.cz + D.dcz;
-          if (nx < 0 || nx >= gridX || nz < 0 || nz >= gridY) continue;
-          const ni = cellIdx(nx, nz);
-          if (cellState[ni] !== 0) continue;      // must be alive
-          if (occupied.has(ni)) continue;         // no cube resting there now
-          if (claimed.has(ni)) continue;          // not taken this iteration
-          targets.push(D);
-        }
-        if (targets.length > 0) {
-          const D = targets[(Math.random() * targets.length) | 0];
-          const nx = c.cx + D.dcx, nz = c.cz + D.dcz;
-          claimed.add(cellIdx(nx, nz));
-          // Vacated cell begins sinking now.
-          const vi = cellIdx(c.cx, c.cz);
-          cellState[vi] = 1; sinkAt[vi] = tick;
-          planRoll(i, D);
-          allStranded = false;
-        } else {
-          planYaw(i);
-        }
-      }
-
-      // Reset only when EVERY cube is stranded in the same iteration.
-      if (allStranded && cubeCount > 0) resetHold = HOLD_ITERS;
-    }
-
-    function planRoll(i, D) {
-      const c = cubes[i];
+    function planRoll(c, D) {
       const [xA, zA] = cellWorld(c.cx, c.cz);
       c.action = {
-        type: "roll",
-        axis: D.axis, dir: D.dir,
+        type: "roll", axis: D.axis, dir: D.dir,
         toCx: c.cx + D.dcx, toCz: c.cz + D.dcz,
         A: [xA, CUBE_H, zA],
         pivot: [xA + D.pdx * PITCH, 0, zA + D.pdz * PITCH],
         O0: c.O,
       };
     }
-    function planYaw(i) {
-      const c = cubes[i];
+    function planYaw(c) {
       const [xA, zA] = cellWorld(c.cx, c.cz);
       c.action = { type: "yaw", dir: Math.random() < 0.5 ? 1 : -1, A: [xA, CUBE_H, zA], O0: c.O };
     }
 
-    // Fold a completed iteration's actions into the cubes' resting state.
-    function commitActions() {
-      for (let i = 0; i < cubeCount; i++) {
-        const c = cubes[i], act = c.action;
-        if (!act) continue;
-        if (act.type === "roll") {
-          const R = act.axis === "x" ? rotX(act.dir * Math.PI / 2) : rotZ(act.dir * Math.PI / 2);
-          c.O = snap24(mul(R, act.O0));
-          c.cx = act.toCx; c.cz = act.toCz;
-        } else if (act.type === "yaw") {
-          c.O = snap24(mul(rotY(act.dir * Math.PI / 2), act.O0));
+    function planIteration() {
+      if (dirtyReconfig) { dirtyReconfig = false; applyReconfig(); }
+
+      const occupied = new Set();
+      for (const c of live) occupied.add(cellIdx(c.cx, c.cz));
+      const claimed = new Set();
+
+      for (const i of shuffled(live.length)) {
+        const c = live[i];
+        const targets = [];
+        for (const D of DIRS) {
+          const nx = c.cx + D.dcx, nz = c.cz + D.dcz;
+          if (nx < 0 || nx >= gridX || nz < 0 || nz >= gridY) continue;
+          const ni = cellIdx(nx, nz);
+          if (cellState[ni] !== 0) continue;   // must be alive
+          if (occupied.has(ni)) continue;       // no cube resting there now
+          if (claimed.has(ni)) continue;         // not taken this iteration
+          targets.push(D);
         }
-        c.action = null;
+        if (targets.length > 0) {
+          const D = targets[(Math.random() * targets.length) | 0];
+          claimed.add(cellIdx(c.cx + D.dcx, c.cz + D.dcz));
+          const vi = cellIdx(c.cx, c.cz);       // vacated square begins sinking
+          cellState[vi] = 1; sinkAt[vi] = tick;
+          planRoll(c, D);
+          c.spins = 0;                           // moving → fully opaque again
+        } else {
+          planYaw(c);
+          c.spins++;                             // stranded → fade one more step
+        }
       }
     }
 
-    // ---- reset choreography ---------------------------------------------
+    // Fold a completed iteration's actions in. Cubes that have spun out
+    // (spins ≥ FADE_STEPS) die: they're dropped and their square is returned so
+    // the caller can start it sinking. Returns [[cx,cz], …] of the dead.
+    function commitActions() {
+      const dead = [];
+      const survivors = [];
+      for (const c of live) {
+        const act = c.action;
+        if (act) {
+          if (act.type === "roll") {
+            const R = act.axis === "x" ? rotX(act.dir * Math.PI / 2) : rotZ(act.dir * Math.PI / 2);
+            c.O = snap24(mul(R, act.O0));
+            c.cx = act.toCx; c.cz = act.toCz;
+          } else if (act.type === "yaw") {
+            c.O = snap24(mul(rotY(act.dir * Math.PI / 2), act.O0));
+          }
+        }
+        c.action = null;
+        if (c.spins >= FADE_STEPS) dead.push([c.cx, c.cz]);
+        else survivors.push(c);
+      }
+      live = survivors;
+      return dead;
+    }
+
+    // ---- reset choreography (only when the board is fully consumed) ------
     function startRise() {
-      for (let i = 0; i < gridX * gridY; i++) {
-        const cx = i % gridX, cz = (i / gridX) | 0;
-        riseFrom[i] = cellDepth(cx, cz);
+      const n = gridX * gridY;
+      for (let i = 0; i < n; i++) {
+        riseFrom[i] = cellDepth(i % gridX, (i / gridX) | 0);
       }
       mode = "rise";
       riseTimer = RISE_DUR;
     }
     function finishRise() {
       clearBoard();
-      scatterCubes();
+      scatterFull();
       mode = "run";
-      tick = 0; acc = 0; resetHold = 0;
+      tick = 0; acc = 0;
       planIteration();
     }
 
-    // The instant re-scatter used by grid/cube edits and the reset() button —
-    // skips straight to the rise animation from the current (partial) board.
-    function requestRise() { if (mode === "run") startRise(); }
-
-    // Kick things off.
+    // ---- kick off --------------------------------------------------------
     applyReconfig();
     planIteration();
 
     // ---- per-frame CPU→GPU packing --------------------------------------
-    const uArr = new Float32Array(44);          // 176 bytes
-    const sqArr = new Float32Array(MAX_GRID * MAX_GRID * 4);
-    const cubeArr = new Float32Array(MAX_CUBES * 16);
+    const uArr = new Float32Array(44);              // 176 bytes
+    const cubeArr = new Float32Array(MAX_CUBES * 20); // 80 bytes / cube
 
-    function activePalette() {
-      return palOverride || PALETTES[paletteIdx];
-    }
+    const activePalette = () => palOverride || PALETTES[paletteIdx];
 
-    // Compute one cube's model matrix for phase p ∈ [0,1) of the iteration.
     function cubeModel(c, p) {
       const act = c.action;
       if (!act || mode === "rise") {
@@ -501,32 +513,54 @@ export default {
         const ang = act.dir * (Math.PI / 2) * ease;
         const R = act.axis === "x" ? rotX(ang) : rotZ(ang);
         const px = act.pivot, A = act.A;
-        // T(p)·R·T(-p)·T(A)·O0
         return mul(translate(px[0], px[1], px[2]),
           mul(R, mul(translate(-px[0], -px[1], -px[2]),
             mul(translate(A[0], A[1], A[2]), act.O0))));
       }
-      // yaw: spin about the cube's own vertical through its centre.
       const A = act.A;
       return mul(translate(A[0], A[1], A[2]), mul(rotY(act.dir * (Math.PI / 2) * ease), act.O0));
+    }
+    // Opacity for a cube at phase p: full while rolling, fading toward 0 across
+    // FADE_STEPS spinning iterations.
+    function cubeOpacity(c, p) {
+      const spinning = c.action && c.action.type === "yaw";
+      const eff = spinning ? (c.spins - 1) + p : c.spins;
+      return Math.max(0, Math.min(1, 1 - eff / FADE_STEPS));
+    }
+
+    // Rise wave: centre cells rise first.
+    function staggerT(cx, cz, riseP) {
+      const mx = (gridX - 1) / 2, mz = (gridY - 1) / 2;
+      const dist = Math.hypot(cx - mx, cz - mz);
+      const maxDist = Math.hypot(mx, mz) || 1;
+      const delay = (dist / maxDist) * 0.45;
+      return (riseP - delay) / (1 - 0.45);
     }
 
     function frame({ t, dt }) {
       const d = Math.min(dt || 0, 0.05);
 
-      // Advance the iteration clock (decoupled from frame rate).
       if (mode === "run") {
         const iv = interval();
         acc += d;
         let guard = 0;
         while (acc >= iv && mode === "run" && guard < 8) {
           acc -= iv;
-          commitActions();
+          const dead = commitActions();
           tick++;
-          planIteration();
+          for (const [cx, cz] of dead) {
+            const i = cellIdx(cx, cz);
+            if (cellState[i] === 0) { cellState[i] = 1; sinkAt[i] = tick; } // square falls
+          }
+          if (live.length === 0) {
+            const alive = aliveCellIndices();
+            if (alive.length > 0) spawnOn(pickCells(alive, Math.min(cubeCount, alive.length)));
+            else startRise();
+          }
+          if (mode === "run") planIteration();
           guard++;
         }
-        if (acc > iv) acc = 0; // don't spiral after a long stall
+        if (acc > iv) acc = 0;
       } else {
         riseTimer -= d;
         if (riseTimer <= 0) finishRise();
@@ -534,7 +568,7 @@ export default {
       const phase = mode === "run" ? acc / interval() : 0;
       const riseP = mode === "rise" ? 1 - riseTimer / RISE_DUR : 1;
 
-      // ---- camera (frames any grid size from its extents) ----
+      // ---- camera ----
       const cw = context.canvas.width, ch = context.canvas.height;
       const aspect = cw / Math.max(1, ch);
       const span = Math.max(gridX, gridY) * PITCH;
@@ -554,7 +588,6 @@ export default {
       uArr[28] = pal.c[0]; uArr[29] = pal.c[1]; uArr[30] = pal.c[2]; uArr[31] = 0;
       uArr[32] = pal.d[0]; uArr[33] = pal.d[1]; uArr[34] = pal.d[2]; uArr[35] = 0;
       uArr[36] = SINK_DIST; uArr[37] = mosaic; uArr[38] = t; uArr[39] = 0;
-      // sun direction (normalised) + intensity in .w
       const L = [0.4, 0.85, 0.3];
       const ln = 1 / Math.hypot(L[0], L[1], L[2]);
       uArr[40] = L[0] * ln; uArr[41] = L[1] * ln; uArr[42] = L[2] * ln; uArr[43] = 1;
@@ -569,8 +602,11 @@ export default {
           if (mode === "rise") {
             depth = riseFrom[idx] * (1 - smoothstep(staggerT(cx, cz, riseP)));
           } else {
-            if (cellState[idx] === 2) continue; // gone: not drawn
+            if (cellState[idx] === 2) continue;            // gone: not drawn
             depth = cellDepth(cx, cz);
+            if (cellState[idx] === 1 && depth >= SINK_DIST) { // fully sunk → gone
+              cellState[idx] = 2; continue;
+            }
           }
           const [wx, wz] = cellWorld(cx, cz);
           const parity = (cx + cz) & 1;
@@ -583,11 +619,15 @@ export default {
       }
       device.queue.writeBuffer(sqBuf, 0, sqArr, 0, sqN * 4);
 
-      // ---- cube instances ----
-      for (let i = 0; i < cubeCount; i++) {
-        cubeArr.set(cubeModel(cubes[i], phase), i * 16);
+      // ---- cube instances (pack opaque-first so fading cubes blend over) ----
+      const order = live.map((_, i) => i).sort((a, b) => cubeOpacity(live[b], phase) - cubeOpacity(live[a], phase));
+      for (let k = 0; k < order.length; k++) {
+        const c = live[order[k]];
+        cubeArr.set(cubeModel(c, phase), k * 20);
+        cubeArr[k * 20 + 16] = cubeOpacity(c, phase);
+        cubeArr[k * 20 + 17] = 0; cubeArr[k * 20 + 18] = 0; cubeArr[k * 20 + 19] = 0;
       }
-      device.queue.writeBuffer(cubeBuf, 0, cubeArr, 0, cubeCount * 16);
+      device.queue.writeBuffer(cubeBuf, 0, cubeArr, 0, live.length * 20);
 
       // ---- draw ----
       ensureDepth(cw, ch);
@@ -608,21 +648,14 @@ export default {
       pass.setVertexBuffer(0, sqMesh.vb);
       pass.setIndexBuffer(sqMesh.ib, "uint16");
       pass.drawIndexed(sqMesh.count, sqN);
-      pass.setPipeline(cubePipe);
-      pass.setVertexBuffer(0, cubeMesh.vb);
-      pass.setIndexBuffer(cubeMesh.ib, "uint16");
-      pass.drawIndexed(cubeMesh.count, cubeCount);
+      if (live.length > 0) {
+        pass.setPipeline(cubePipe);
+        pass.setVertexBuffer(0, cubeMesh.vb);
+        pass.setIndexBuffer(cubeMesh.ib, "uint16");
+        pass.drawIndexed(cubeMesh.count, live.length);
+      }
       pass.end();
       device.queue.submit([enc.finish()]);
-    }
-
-    // Rise wave: centre cells rise first. Returns a 0..1 progress for this cell.
-    function staggerT(cx, cz, riseP) {
-      const mx = (gridX - 1) / 2, mz = (gridY - 1) / 2;
-      const dist = Math.hypot(cx - mx, cz - mz);
-      const maxDist = Math.hypot(mx, mz) || 1;
-      const delay = (dist / maxDist) * 0.45;
-      return (riseP - delay) / (1 - 0.45);
     }
 
     // ---- instance --------------------------------------------------------
@@ -632,7 +665,7 @@ export default {
       resize({ width, height }) { ensureDepth(width, height); },
 
       destroy() {
-        ubuf.destroy(); sqBuf.destroy(); cubeBuf.destroy();
+        ubuf.destroy(); sqBuf?.destroy(); cubeBuf.destroy();
         sqMesh.vb.destroy(); sqMesh.ib.destroy();
         cubeMesh.vb.destroy(); cubeMesh.ib.destroy();
         depthTex?.destroy(); depthTex = null;
@@ -666,7 +699,6 @@ export default {
       setMosaic(v) { mosaic = Math.max(0, Math.min(1, v)); },
       getMosaic() { return mosaic; },
 
-      // Generate tasteful cosine coefficients and make them the active palette.
       randomPalette() {
         const rnd = (lo, hi) => lo + Math.random() * (hi - lo);
         const vec = (lo, hi) => [rnd(lo, hi), rnd(lo, hi), rnd(lo, hi)];
@@ -679,7 +711,7 @@ export default {
         return palOverride;
       },
 
-      reset() { requestRise(); },
+      reset() { if (mode === "run") startRise(); },
     };
   },
 };

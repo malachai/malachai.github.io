@@ -1,5 +1,5 @@
 {
-  "generated": "2026-07-17",
+  "generated": "2026-07-19",
   "doodles": [
     {
       "slug": "001-rgb-cube",
@@ -34,7 +34,7 @@
       "slug": "003-rolling-decay",
       "path": "doodles/003-rolling-decay/",
       "title": "Rolling Decay",
-      "description": "Shiny cubes tip square-by-square across a chessboard, sinking the floor behind them until every cube is stranded.",
+      "description": "Shiny cubes tip square-by-square across a chessboard, fading out when stranded and sinking the floor behind them until nothing is left.",
       "tags": [
         "mesh",
         "3d",
