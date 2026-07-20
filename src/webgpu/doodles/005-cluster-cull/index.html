@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cluster Cull — WebGPU doodle</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: #0e0e12;
+    color: #e9e9ee;
+    font: 15px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    display: flex;
+    flex-direction: column;
+    min-height: 100%;
+  }
+  header { padding: 16px 20px 8px; }
+  header a.back { color: #9aa0ff; text-decoration: none; font-size: 13px; }
+  header a.back:hover { text-decoration: underline; }
+  h1 { margin: 6px 0 2px; font-size: 18px; font-weight: 600; }
+  p.desc { margin: 0; color: #a7a7b3; font-size: 13px; max-width: 60ch; }
+  #stage {
+    flex: 1;
+    min-height: 0;
+    margin: 12px 20px 20px;
+    border-radius: 10px;
+    overflow: hidden;
+    background:
+      radial-gradient(120% 120% at 50% 40%, #17171d 0%, #0a0a0e 100%);
+    position: relative;
+  }
+  canvas { display: block; width: 100%; height: 100%; }
+
+  .controls {
+    position: absolute; left: 12px; bottom: 12px;
+    display: flex; gap: 8px;
+  }
+  .controls button {
+    background: rgba(255,255,255,0.08);
+    color: #e9e9ee;
+    border: 1px solid rgba(255,255,255,0.14);
+    border-radius: 6px;
+    padding: 5px 12px;
+    font: inherit; font-size: 13px;
+    cursor: pointer;
+  }
+  .controls button:hover { background: rgba(255,255,255,0.14); }
+
+  /* Tunable panel, top-right of the stage. */
+  .panel {
+    position: absolute; top: 12px; right: 12px;
+    width: 232px;
+    background: rgba(14,14,20,0.72);
+    backdrop-filter: blur(6px);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 10px;
+    padding: 12px 12px 10px;
+    display: flex; flex-direction: column; gap: 9px;
+    font-size: 12px; color: #cdd0da;
+  }
+  .panel .row { display: flex; flex-direction: column; gap: 3px; }
+  .panel .row .lbl { display: flex; justify-content: space-between; }
+  .panel .row .lbl b { font-weight: 600; color: #e9e9ee; }
+  .panel input[type="range"] { width: 100%; accent-color: #8a8ff0; }
+  /* Dual-thumb range: two overlaid range inputs (transparent tracks, only the
+     thumbs interactive) over a shared track with a highlighted sub-range. */
+  .panel .dual { position: relative; height: 22px; }
+  .panel .dual .track {
+    position: absolute; left: 0; right: 0; top: 9px; height: 4px;
+    border-radius: 2px; background: rgba(255,255,255,0.14);
+  }
+  .panel .dual .fill {
+    position: absolute; top: 9px; height: 4px; border-radius: 2px; background: #8a8ff0;
+  }
+  .panel .dual input[type="range"] {
+    position: absolute; left: 0; top: 0; width: 100%; height: 22px; margin: 0;
+    -webkit-appearance: none; appearance: none; background: transparent; pointer-events: none;
+  }
+  .panel .dual input[type="range"]::-webkit-slider-runnable-track { background: transparent; border: none; }
+  .panel .dual input[type="range"]::-moz-range-track { background: transparent; border: none; }
+  .panel .dual input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none; pointer-events: auto; cursor: pointer;
+    width: 14px; height: 14px; margin-top: 4px; border-radius: 50%;
+    background: #e9e9ee; border: 2px solid #8a8ff0;
+  }
+  .panel .dual input[type="range"]::-moz-range-thumb {
+    pointer-events: auto; cursor: pointer;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: #e9e9ee; border: 2px solid #8a8ff0;
+  }
+  .panel .inline { flex-direction: row; align-items: center; justify-content: space-between; gap: 8px; }
+  .panel input[type="color"] {
+    width: 34px; height: 22px; padding: 0; border: none; background: none; cursor: pointer;
+  }
+  .panel .btnrow { display: flex; gap: 8px; margin-top: 2px; }
+  .panel .btnrow button {
+    flex: 1;
+    background: rgba(138,143,240,0.16);
+    color: #e4e5fb;
+    border: 1px solid rgba(138,143,240,0.35);
+    border-radius: 6px; padding: 6px 8px; font: inherit; font-size: 12px; cursor: pointer;
+  }
+  .panel .btnrow button:hover { background: rgba(138,143,240,0.26); }
+  .panel .stats {
+    display: flex; justify-content: space-between; gap: 6px;
+    padding-top: 7px; margin-top: 1px;
+    border-top: 1px solid rgba(255,255,255,0.08);
+    color: #a7a7b3; font-variant-numeric: tabular-nums;
+  }
+  .panel .stats b { color: #e9e9ee; font-weight: 600; }
+  .panel summary { cursor: pointer; color: #9aa0ff; list-style: none; font-size: 12px; }
+  .panel summary::-webkit-details-marker { display: none; }
+
+  .doodle-fallback {
+    display: flex; flex-direction: column; align-items: center;
+    justify-content: center; gap: 14px; height: 100%;
+    padding: 24px; text-align: center; color: #c7c7d1;
+  }
+  .doodle-fallback img { max-width: 480px; width: 100%; border-radius: 8px; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "doodle-lib/": "../../lib/"
+  }
+}
+</script>
+</head>
+<body>
+  <header>
+    <a class="back" href="../../index.html">← gallery</a>
+    <h1>Cluster Cull</h1>
+    <p class="desc">
+      A scatter of outlined shapes clusters by overlap; small clusters are
+      culled and survivors fuse into one composite silhouette.
+    </p>
+  </header>
+
+  <div id="stage">
+    <canvas id="c" aria-label="A field of outlined shapes is thrown at random, grouped by overlap, and the larger clusters merge into single composite outlines while the rest fade away."></canvas>
+
+    <div class="controls"><button id="toggle" type="button">Pause</button></div>
+
+    <details class="panel" id="panel" open>
+      <summary>controls</summary>
+
+      <div class="row">
+        <span class="lbl">shapes <b id="v-count">24</b></span>
+        <input type="range" id="r-count" min="5" max="64" step="1" value="24" />
+      </div>
+      <div class="row">
+        <span class="lbl">min cluster (x) <b id="v-x">3</b></span>
+        <input type="range" id="r-x" min="1" max="10" step="1" value="3" />
+      </div>
+      <div class="row">
+        <span class="lbl">size <b id="v-size">6–16%</b></span>
+        <div class="dual">
+          <div class="track"></div><div class="fill" id="f-size"></div>
+          <input type="range" id="r-szmin" min="0.02" max="0.4" step="0.005" value="0.06" />
+          <input type="range" id="r-szmax" min="0.02" max="0.4" step="0.005" value="0.16" />
+        </div>
+      </div>
+      <div class="row">
+        <span class="lbl">rotation <b id="v-rot">0–360°</b></span>
+        <div class="dual">
+          <div class="track"></div><div class="fill" id="f-rot"></div>
+          <input type="range" id="r-rmin" min="0" max="360" step="1" value="0" />
+          <input type="range" id="r-rmax" min="0" max="360" step="1" value="360" />
+        </div>
+      </div>
+      <div class="row">
+        <span class="lbl">stroke <b id="v-stroke">2–5 px</b></span>
+        <div class="dual">
+          <div class="track"></div><div class="fill" id="f-stroke"></div>
+          <input type="range" id="r-stmin" min="1" max="12" step="0.5" value="2" />
+          <input type="range" id="r-stmax" min="1" max="12" step="0.5" value="5" />
+        </div>
+      </div>
+      <div class="row inline">
+        <span>ink colour</span>
+        <input type="color" id="r-color" value="#e9e9ee" />
+      </div>
+      <div class="row">
+        <span class="lbl">hold <b id="v-hold">5.0 s</b></span>
+        <input type="range" id="r-hold" min="2" max="15" step="0.5" value="5" />
+      </div>
+      <div class="btnrow">
+        <button id="r-rethrow" type="button">re-throw</button>
+      </div>
+      <div class="stats">
+        <span>thrown <b id="s-thrown">–</b></span>
+        <span>survivors <b id="s-surv">–</b></span>
+        <span>clusters <b id="s-clu">–</b></span>
+      </div>
+    </details>
+  </div>
+
+  <script type="module">
+    import { isWebGPUAvailable, renderFallback } from "doodle-lib/support.js";
+    import { initGPU } from "doodle-lib/gpu.js";
+    import { runLoop } from "doodle-lib/loop.js";
+
+    // Cache-bust the frequently-edited doodle files (../../spec.md §6).
+    const BUST = "?ts=" + Date.now();
+
+    const canvas = document.getElementById("c");
+    const stage = document.getElementById("stage");
+    const panel = document.getElementById("panel");
+    const toggle = document.getElementById("toggle");
+
+    const loadWGSL = (url) =>
+      fetch(new URL(url + BUST, import.meta.url)).then((r) => {
+        if (!r.ok) throw new Error(`Failed to load ${url}: HTTP ${r.status}`);
+        return r.text();
+      });
+
+    (async () => {
+      const doodle = (await import("./doodle.js" + BUST)).default;
+
+      if (!isWebGPUAvailable()) {
+        toggle.remove();
+        panel.remove();
+        renderFallback(stage, { reason: "no-webgpu", thumbnail: doodle.meta.thumbnail });
+        return;
+      }
+      try {
+        const { adapter, device, context, format } = await initGPU(canvas);
+        const instance = await doodle.init({
+          device, adapter, context, canvas, format, loadWGSL,
+          mode: "standalone", quality: 1,
+        });
+        const handle = runLoop(instance, { canvas, context, device });
+
+        let playing = true;
+        toggle.addEventListener("click", () => {
+          playing = !playing;
+          if (playing) handle.resume();
+          else handle.pause();
+          toggle.textContent = playing ? "Pause" : "Play";
+        });
+
+        // ---- wire the control panel ----
+        const $ = (id) => document.getElementById(id);
+        const bindSlider = (id, vid, fmt, set) => {
+          const el = $(id), lab = $(vid);
+          el.addEventListener("input", () => {
+            const val = parseFloat(el.value);
+            set(val);
+            lab.textContent = fmt(val);
+          });
+        };
+        // Dual-thumb range: two overlaid range inputs whose thumbs can't cross
+        // (min ≤ max, enforced live), a highlighted fill between them and a
+        // combined label. setLo/setHi push each end to the doodle.
+        const bindDualRange = (loId, hiId, fillId, labId, fmt, setLo, setHi) => {
+          const lo = $(loId), hi = $(hiId), fill = $(fillId), lab = $(labId);
+          const a = parseFloat(lo.min), b = parseFloat(lo.max);
+          const pct = (v) => ((v - a) / (b - a)) * 100;
+          const refresh = () => {
+            const vlo = parseFloat(lo.value), vhi = parseFloat(hi.value);
+            fill.style.left = pct(vlo) + "%";
+            fill.style.width = (pct(vhi) - pct(vlo)) + "%";
+            lab.textContent = fmt(vlo, vhi);
+          };
+          lo.addEventListener("input", () => {
+            let vlo = parseFloat(lo.value);
+            if (vlo > parseFloat(hi.value)) { vlo = parseFloat(hi.value); lo.value = vlo; }
+            setLo(vlo); refresh();
+          });
+          hi.addEventListener("input", () => {
+            let vhi = parseFloat(hi.value);
+            if (vhi < parseFloat(lo.value)) { vhi = parseFloat(lo.value); hi.value = vhi; }
+            setHi(vhi); refresh();
+          });
+          refresh();
+        };
+
+        bindSlider("r-count", "v-count", (v) => String(v | 0), (v) => instance.setShapeCount(v));
+        bindSlider("r-x", "v-x", (v) => String(v | 0), (v) => instance.setMinCluster(v));
+        bindDualRange("r-szmin", "r-szmax", "f-size", "v-size",
+          (a, b) => Math.round(a * 100) + "–" + Math.round(b * 100) + "%",
+          (v) => instance.setSizeRange({ min: v }), (v) => instance.setSizeRange({ max: v }));
+        bindDualRange("r-rmin", "r-rmax", "f-rot", "v-rot",
+          (a, b) => (a | 0) + "–" + (b | 0) + "°",
+          (v) => instance.setRotationRange({ min: v }), (v) => instance.setRotationRange({ max: v }));
+        bindDualRange("r-stmin", "r-stmax", "f-stroke", "v-stroke",
+          (a, b) => a.toFixed(1).replace(/\.0$/, "") + "–" + b.toFixed(1).replace(/\.0$/, "") + " px",
+          (v) => instance.setStrokeRange({ min: v }), (v) => instance.setStrokeRange({ max: v }));
+        $("r-color").addEventListener("input", (e) => instance.setColor(e.target.value));
+        bindSlider("r-hold", "v-hold", (v) => v.toFixed(1) + " s", (v) => instance.setHoldTime(v));
+        $("r-rethrow").addEventListener("click", () => instance.rethrow());
+
+        // ---- stats read-out (thrown / survivors / clusters) ----
+        const sThrown = $("s-thrown"), sSurv = $("s-surv"), sClu = $("s-clu");
+        const tick = () => {
+          const st = instance.getStats();
+          sThrown.textContent = st.thrown;
+          sSurv.textContent = st.survivors;
+          sClu.textContent = st.clusters;
+          requestAnimationFrame(tick);
+        };
+        requestAnimationFrame(tick);
+      } catch (err) {
+        console.error(err);
+        toggle.remove();
+        panel.remove();
+        renderFallback(stage, {
+          reason: String((err && err.message) || err),
+          thumbnail: doodle.meta.thumbnail,
+        });
+      }
+    })();
+  </script>
+</body>
+</html>
