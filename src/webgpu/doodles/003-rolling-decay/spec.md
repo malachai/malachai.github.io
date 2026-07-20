@@ -1,273 +1,184 @@
 # 003-rolling-decay — Rolling Decay
 
-- **Status:** wip (first implementation landed 2026-07-17 — choreography +
-  analytic reflections; dynamic environment-cubemap deferred; awaiting first
-  on-hardware run)
+- **Status:** wip (2026-07-17 — real edge-pivot rolling with **overlap→explode**
+  collision: tiling solids lay a seamless mosaic, non-tiling ones (dodeca,
+  Archimedean) roll freely and burst on overlap; eight solids; analytic
+  reflections; dynamic cubemap deferred; awaiting an on-hardware run)
 - **Created:** 2026-07-17
-- **Tags:** mesh, 3d, simulation, instanced, generative, reflection
+- **Tags:** mesh, 3d, simulation, instanced, generative
 
-*(Slug is a placeholder — rename before first publish; it becomes the
-permalink.)*
+*(Slug/title are a placeholder mismatch — the piece no longer "decays", it rolls
+and paves. Rename before first publish; the slug becomes the permalink.)*
 
-> **Build note (2026-07-17):** the choreography is fully implemented — board,
-> rolling/decay, strand→fade→die, generational respawn, consume-to-reset,
-> instanced squares & cubes, depth buffer, orbit camera, cosine palettes, full
-> control panel (grid to 1000). Reflections in this first pass
-> are the **analytic environment only** (the escape/fallback layer below); the
-> dynamic 6-face cubemap probe with box-projection parallax is a deliberate
-> follow-up. Everything described under "cubemap" in Reflections is therefore
-> not yet live. See "Build status & divergences" under Implementation notes.
+> **History:** started as cubes rolling across a chessboard *consuming* the
+> floor; inverted to a paint-the-grid Tron-paver on a square lattice with
+> face-shaped stamps; now the **movement itself is a true roll** — each solid
+> tips over an edge of its contact face so the next face lands flat and shares
+> that edge, tiling the plane seamlessly. Earlier mechanics are gone. Reflections
+> are still the analytic layer only (dynamic cubemap deferred).
 
 ## Intent
 
-A chessboard of coloured squares, seen from a slowly orbiting three-quarter
-view. Shiny metal cubes roll from square to square in discrete iterations,
-pivoting 90° on the ground edge like dice being tipped. Every square a cube
-vacates slowly sinks out of view and can never be landed on again, so the
-floor is consumed behind the cubes — the piece is about watching them strand
-themselves. A cube with nowhere left to roll spins in place on its vertical
-axis, glinting. When every cube is stranded, the board rises back up, the
-cubes re-scatter, and it all begins again.
-
-The cubes are genuinely reflective: they mirror the board, the sinking
-squares, and each other via a dynamic environment cubemap (see Rendering).
-
-Mood: clean, mechanical, slightly ominous. The satisfaction is in the crisp
-90° tips and the slow inevitability of the collapse.
+An empty dark arena. Shiny solids **roll edge over edge** across it — each tip
+lands a new face flat on the plane, stamped down as a coloured tile. Solids whose
+faces tile the plane (triangles → tetra/octa/icosa, squares → cube) lay a
+*seamless mosaic*; the rest (dodecahedron, Archimedean) roll freely and, the
+instant a new face would **overlap** the existing mosaic — or run off the arena —
+the solid **explodes**, its faces bursting apart and fading. When a wave is gone
+a fresh wave drops onto the free space; once there's no free space the grid
+clears in a ripple and begins again. Mood: clean, mechanical, a little
+relentless — the tiling solids fill space patiently, the others detonate.
 
 ## How it works
 
+### Rolling + overlap collision
+
+A polyhedron rolling on a plane rests on one face; to advance it pivots about an
+edge of that face by its **exterior dihedral angle** (`arccos(n₁·n₂)` for
+adjacent outward normals) until the neighbouring face lands flat, sharing the
+pivot edge. `rollOver` does this for **any** convex solid and any edge (the tip
+angle emerges from the geometry). For congruent regular faces the new footprint
+is the reflection of the old across the edge, which **tiles the plane** —
+triangles → triangular lattice (tetra/octa/icosa), squares → square lattice
+(cube). Pentagons and mixed faces don't tile, so those solids' footprints
+eventually overlap; that overlap is what ends them.
+
+Movement is **continuous** (a full 3-D pose per solid, not a lattice index).
+Collision is **convex-polygon overlap** (SAT, edge-touching excluded) between a
+candidate footprint and the stamped mosaic, accelerated by a spatial hash.
+Geometry is unit-tested in `roll_proto.mjs`/`cont_proto.mjs` and the loop in
+`sim3.mjs` (tiling footprints stay lattice-exact to ~1e-13; no drift) and
+`cont_proto.mjs` (all eight solids roll, explode, respawn, reset; **no live solid
+ever overlaps a stamp**).
+
 ### Simulation
 
-State lives in JS; the GPU only draws. One **iteration** every
-`1 / speed` seconds (`speed` = iterations per second, configurable).
+State lives in JS; the GPU only draws. One **iteration** every `1/speed`
+seconds. Per iteration, in shuffled order:
 
-Grid: `gridX × gridY` cells (each axis configurable, **2–1000**). Each cell is
-one of: **alive** (valid to stand on / roll onto), **sinking** (animating
-downward, invalid), or **gone** (fully out of view, invalid).
+1. Project the contact face to its footprint; for each non-incoming edge,
+   `rollOver` gives the candidate landing pose + footprint. Candidates rank by
+   **momentum** (dot with the heading).
+2. The first candidate that is **in-bounds and whose footprint doesn't overlap**
+   any stamp, any other living solid, or a footprint already claimed this
+   iteration is chosen. The solid **stamps the face it's leaving**, then rolls
+   (pivot eased over ~72% of the interval, then a dwell).
+3. **If no candidate is clean** (every roll would overlap / leave the arena) the
+   solid **explodes**: it stamps its current face and is moved to a short
+   explosion animation (faces burst outward along their normals + fade over
+   ~0.55 s), independent of the iteration clock.
 
-Per iteration:
+Every move or explosion stamps a face, so the mosaic grows monotonically → the
+arena fills. **Respawn & reset:** a solid is replaced the **moment it explodes** —
+each iteration the population is topped back up to `n` on any free spawn slots
+(not waiting for a whole generation to die). Once the mosaic leaves no free slot
+the population can't be replaced and dwindles to zero; then the grid **clears**
+(tiles drop & fade over ~1.5 s, staggered from centre) and refills. `reset()`
+forces the clear.
 
-1. Visit the cubes in a freshly shuffled random order; earlier cubes claim
-   squares first — this is the conflict resolution (agreed).
-2. For each cube, valid targets are the 4 orthogonal neighbours that are
-   in-bounds, **alive**, not occupied, and not already claimed this
-   iteration.
-3. If the cube has ≥1 valid target: pick one uniformly at random, claim it,
-   and begin a **roll**: a 90° rotation about the shared ground edge, eased
-   (smoothstep) over the first ~70% of the iteration interval, the remainder
-   a dwell. The vacated cell flips to **sinking** the moment the roll starts.
-   Rolling resets the cube to fully opaque.
-4. If the cube has no valid target: it is **stranded** — it yaws 90° about its
-   vertical axis this iteration (same easing) **and fades**. A cube fades to
-   nothing over `FADE_STEPS = 5` consecutive stranded iterations; the moment it
-   reaches full transparency it is removed, and the square it was standing on
-   flips to **sinking** (the floor consumes the spot it died on).
-5. **Fade is per-consecutive-strand, not latched to death:** a cube blocked
-   only transiently (a neighbour occupied this turn) fades a step, but the
-   instant it can move again it rolls and snaps back to full opacity. Only a
-   cube stranded five turns *in a row* actually dies. (This supersedes the
-   original "spins forever" behaviour.)
+### Solids
 
-Sinking: a sinking cell descends at a fixed world rate over ~4 iterations,
-then flips to **gone** (skipped by the renderer). Descent speed scales with
-iteration speed so the choreography reads the same at any tempo.
-
-**Generations & reset (revised):** the board is *not* reset when cubes strand.
-Instead cubes strand, fade, die, and consume their squares until a whole
-generation has died off (`live == 0`). If **alive squares still remain**, a
-fresh generation drops onto random surviving squares and play continues —
-no board reset. Only when the board is **fully consumed** (no alive squares
-left) does the full reset fire: all cells rise back to the surface over ~1.5s,
-staggered by distance from centre for a wave, then a fresh full board is
-scattered. The manual `reset()` button triggers this rise immediately.
-
-Cube count `n` (1–64) is clamped to `gridX·gridY`; spawn cells are distinct.
-Each respawned generation uses the same `n`, clamped to the surviving square
-count.
+Eight, chosen live via `setSolid` (any change ⇒ full reset): the five **Platonic**
+plus three **Archimedean** (Cuboctahedron, Truncated Octahedron, Truncated Cube).
+The four with a single regular face type that tiles (tetra/octa/icosa on a
+triangular lattice, cube on a square lattice) **spawn on a shared lattice** so
+their mosaics line up seamlessly and they only explode when genuinely boxed in;
+the others (dodecahedron + Archimedean) spawn on a coarse grid and explode as
+soon as their curving path would overlap — so they burst far more often. Geometry
+is built at init by a generic convex-hull face finder returning the render mesh
+(flat per-face normals — faceted metal), face rings/centroids/**edge adjacency**,
+and the face-0 canonical footprint; each solid is scaled to inradius 0.5.
 
 ### Rendering
 
-- **Instanced draws, one pipeline each** for squares and cubes:
-  - Squares: a thin box (not a flat quad — the sides read while sinking),
-    `gridX·gridY` instances, per-instance data = cell coords + sink depth +
-    palette parity. Model transform derived in the vertex shader.
-  - Cubes: a unit cube (slightly bevelled if cheap — see Ideas), `n`
-    instances, per-instance model matrix computed in JS each frame (roll
-    pivots make this awkward in-shader) and written to a storage or
-    instance buffer.
-- **Rolling transform:** for a roll from cell A to B, pivot `p` = midpoint of
-  the shared ground edge, axis = the horizontal edge direction; model =
-  `T(p) · R(axis, θ(t)) · T(−p) · M_A`, where `M_A` is the cube's accumulated
-  orientation sitting on A and θ eases 0 → 90°. On completion, fold the 90°
-  rotation into the accumulated orientation and **snap to the nearest of the
-  24 axis-aligned rotations** so floating-point error never accumulates.
-- **Depth buffer** (`depth24plus`), lazily created, recreated on `resize`,
-  destroyed properly — overarching spec §11.
-- **Camera:** fixed elevation three-quarter view, slow continuous yaw orbit
-  (~0.05 rad/s), framing computed from grid extents so any grid size fits.
+- **Two pipelines, one bind group.** Tiles: a **rebuilt flat triangle mesh** each
+  frame — each stamped footprint contributes its polygon (fan-triangulated at
+  `y=0`, dropped/faded during a clear), vertex attrs = position + mottle seed.
+  Solids: the selected mesh, live (rolling) **and** dying (exploding) instances
+  via a storage buffer; per-instance model matrix + `tint` (opacity + explode
+  push).
+- **Roll pose:** `Rot(edge, tip·ease, P) · pose₀`; on commit the final pose
+  becomes the resting pose. Verified: contact face lands flat, shares the pivot
+  edge, nothing penetrates the plane.
+- **Explosion:** dying solids carry a timer; the shader pushes each vertex along
+  its face normal by `tint.y` (`= t·EXPLODE_PUSH`) while `tint.x` (opacity) fades
+  — the solid bursts into its faces over ~0.55 s, decoupled from the iteration
+  clock.
+- **Depth buffer** (`depth24plus`), lazy, recreated on `resize`, destroyed —
+  overarching §11.
+- **Camera:** orbit rig (yaw/pitch/distance/pan), framed from arena extents;
+  gentle toggleable auto-orbit. Standalone: drag to orbit, scroll to zoom,
+  shift/right-drag to pan (horizontal inverted per feedback); listeners on the
+  canvas, standalone only, removed in `destroy`.
 
-### Reflections (dynamic environment cubemap)
+### Colour (per-solid palette)
 
-Real reflections without ray tracing:
+A **palette** of six **analogous** colours — a random base hue with six
+variations inside a tight ~0.12 (±~22°) hue band, varied sat/val — is generated
+per load / `newColors()`, so the colours are clearly related rather than wildly
+different. **Each solid is assigned one palette colour when it spawns and keeps
+it for its whole life** —
+while rolling, and through its explosion. Every tile it stamps carries that colour
+(with a faint per-tile value jitter for texture), so the mosaic is a patchwork of
+each solid's own hue, and the solid renders as **metal tinted by its colour**
+(going white at grazing angles via fresnel). Colours are stored explicitly:
+per-vertex on the tile mesh, per-instance (an extra `vec4`) on the solids. The
+analytic environment's ground tone uses the palette **average**. Clearing tiles
+fade to the background as they drop.
 
-- **One shared cubemap probe** at the board centre, slightly above the
-  surface. Each frame, render the scene into the 6 faces of a small cubemap
-  (~128px, `rgba8unorm` + small depth), using a **simplified shading path**
-  (palette colour + basic lighting; no reflection sampling — one bounce
-  only). Squares and cubes are both rendered into it so cubes reflect the
-  board, the decay, and each other.
-- **Box-projection parallax correction** in the cube fragment shader: a raw
-  cubemap lookup assumes an environment at infinity, which slides wrongly on
-  cubes away from the centre. Instead, intersect the reflected ray with the
-  board's AABB (known extents) and sample the cubemap in the direction of
-  the corrected hit point. A few lines of shader; makes floor reflections
-  track cube positions convincingly.
-- **Analytic environment as the escape/fallback layer:** reflected rays that
-  miss the board AABB shade from a procedural sky gradient + ground tone +
-  2–3 fake bright strip lights; fresnel + tight specular on top. This is
-  also the **entire** reflection model when `ctx.quality < 1` (gallery
-  mode): the cubemap passes are skipped so a future live-thumbnail gallery
-  never pays 6 extra passes per card.
-- Squares get the palette colour with a mild top-light (no reflection
-  sampling); cubes are near-colourless metal so the palette reads through
-  their reflections.
-- **Accepted artifacts** (single shared probe, one bounce): a cube faintly
-  reflects itself, and cube-on-cube reflections are plausible rather than
-  geometrically exact. Fine at this scale.
-- **Perf lever if ever needed:** round-robin — update one cubemap face per
-  frame instead of six.
+### Reflections (dynamic cubemap — DEFERRED)
 
-### Palette system
-
-A palette is a **cosine gradient** (Inigo Quilez formulation):
-`color(t) = a + b·cos(2π(c·t + d))` with `a,b,c,d : vec3`. Consequences:
-
-- The active palette is 4 `vec4`s of uniform data (48 bytes used) —
-  switching palettes is a single `writeBuffer`, no rebuilds.
-- **Checker mapping:** light squares sample `t = 0.25`, dark squares
-  `t = 0.75`. Preserves the chessboard read while letting palettes be rich.
-- Optional **mosaic amount** (0–1): adds a small per-cell hash jitter to `t`
-  so squares within each parity vary slightly. Default 0 (pure checker).
-- Presets are a named list in `doodle.js`
-  (`{ name, a, b, c, d }[]`) — e.g. Classic (near-B&W), Ember, Glacier,
-  Synthwave, Moss. A **randomise** action generates coefficients within
-  tasteful bounds.
-- Sinking squares darken toward the background as they descend
-  (depth-based multiply in-shader) so they fade rather than pop.
+Analytic escape layer only (sky gradient + base-tinted ground + strip lights +
+fresnel/specular + tonemap); also the intended `quality < 1` path. The 6-face
+dynamic cubemap so solids mirror the actual mosaic and each other is the biggest
+follow-up, **not built yet**.
 
 ## Control surface
 
-Extra instance methods beyond the contract, wired to the standalone page
-(gallery mode ignores them; defaults must look good unattended):
-
 | Method | UI | Notes |
 |---|---|---|
-| `setGrid({x, y})` / `getGrid()` | two sliders (2–1000) | Instant re-scatter at the next iteration boundary; square storage grows to fit |
-| `setCubeCount(n)` / `getCubeCount()` | slider (1–64, clamped to grid area) | Full reset, as above |
-| `setSpeed(itersPerSec)` / `getSpeed()` | slider (0.25–8) | Takes effect next iteration; no reset |
-| `setPalette(name)` / `getPalette()` / `paletteNames` | dropdown | Uniform-only |
-| `setMosaic(v)` / `getMosaic()` | slider (0–1) | Uniform-only |
-| `randomPalette()` | button | Generates coefficients, returns them |
-| `reset()` | button | Runs the reset choreography immediately |
+| `setGrid({x, y})` / `getGrid()` | two sliders (2–1000) | Arena size; full reset at next boundary |
+| `setSolidCount(n)` / `getSolidCount()` | slider (1–64) | Full reset |
+| `setSpeed(itersPerSec)` / `getSpeed()` | slider (0.25–8) | Next iteration; no reset |
+| `setSolid(name)` / `getSolid()` / `solidNames` | dropdown (8 solids) | Full reset |
+| `newColors()` / `getColors()` | "new colours" button | Regenerates the palette; live solids/tiles keep their assigned colours |
+| `setAutoOrbit(b)` / `getAutoOrbit()` | "auto-orbit" checkbox | — |
+| `resetView()` | "reset view" button | Recentres orbit/zoom/pan |
+| `reset()` | "reset board" button | Clear choreography now |
 
-Defaults: 12×12 grid, 6 cubes, 1.5 iters/sec, Classic palette, mosaic 0.
+Camera (standalone): drag orbit · scroll zoom · shift/right-drag pan. Defaults:
+12×12 arena, 6 solids, Octahedron, 1.5 iters/sec, auto-orbit on, random hue.
 
 ## Implementation notes
 
-- Iteration ticking is decoupled from frames: accumulate `dt`, fire an
-  iteration when the accumulator crosses the interval, and derive every
-  animation (roll θ, yaw, sink depth, reset wave) from phase within the
-  interval — so pause/resume and reduced-motion single-frame both render a
-  coherent pose.
-- Allocate instance buffers at max size (32×32 squares, 64 cubes) and draw
-  sub-ranges — grid/cube-count changes then never recreate GPU resources
-  (contrast 002, which reuploads positions; here even counts changing is
-  absorbed by the max-allocation).
-- The cubemap needs its own tiny depth texture and 6 render-pass encodes per
-  frame; face views are created once. `destroy()` releases the cubemap, its
-  depth texture, and everything else — reset reuses existing resources and
-  must not leak.
-- Per-frame uploads are tiny: ≤64 cube matrices + one float per square + the
-  uniform block(s). No perf concerns at this scale.
-- Mind uniform alignment for the palette block and the per-face cubemap
-  view-projection matrices (overarching spec §9).
-- Nothing may rely on identifier names surviving minification (spec §3).
-
-### Build status & divergences (first implementation, 2026-07-17)
-
-What's live and how it maps to the brief above, plus where the code diverges —
-all pending a first on-hardware run (the analytic material especially will want
-tuning, spec §1):
-
-- **Reflections: analytic only.** Cubes shade from the analytic environment
-  (sky gradient + palette-tinted ground + three fake strip lights + fresnel +
-  Blinn specular, gently tonemapped) — i.e. exactly the escape/fallback layer,
-  which is also the intended `quality < 1` path. The 6-face dynamic cubemap
-  probe, box-projection parallax, and one-bounce scene render are **not built
-  yet**; cubes currently reflect a studio environment, not the actual board.
-  This is the single biggest follow-up and the reason cube-reflects-board reads
-  as "chrome in a room" rather than "mirror of the decay" for now.
-- **Cube matrices on the CPU, snapped to the 24.** Per-frame model =
-  `T(pivot)·R(axis,θ)·T(−pivot)·T(A)·O_A` for rolls, `T(A)·R_y(θ)·O_A` for
-  strand yaws; on the iteration boundary the 90° turn folds into `O` and snaps
-  to the nearest of the 24 axis-aligned rotations (`buildRot24`/`snap24`).
-  Verified numerically: centres land exactly on the target cell and every fold
-  stays axis-aligned (cube rests flat). Roll-direction sign table lives in
-  `DIRS`.
-- **Iteration clock is phase-derived** (accumulator + `interval = 1/speed`),
-  so pause/resume and reduced-motion single-frame render coherent poses. Sink
-  depth, roll θ, yaw and the rise wave are all functions of phase / continuous
-  tick.
-- **Sinking:** a vacated cell sinks over `SINK_ITERS = 4` iterations to
-  `SINK_DIST = 5` world units, then is `gone` (skipped by the renderer);
-  squares fade toward the background as they descend. Descent is tied to
-  iteration count (not wall-clock), so tempo doesn't change the choreography.
-- **Strand → fade → die → respawn → consume-to-reset** (revised per feedback
-  2026-07-17, see Simulation above): stranded cubes fade over `FADE_STEPS = 5`
-  consecutive strands (per-instance opacity via the widened cube instance +
-  alpha blending on the cube pipeline), then vanish and sink their square. When
-  a whole generation dies, a fresh one respawns on random surviving squares; the
-  full rise-reset (`RISE_DUR = 1.5 s`, centre-out stagger) fires only when no
-  alive squares remain. Validated headlessly (`sim.mjs`): deaths cap at exactly
-  5 spins, mid-generation respawns and consume-to-reset both occur, and every
-  live cube always rests on an alive cell.
-- **Grid / cube-count edits do an *instant* re-scatter** at the next iteration
-  boundary (full board rebuilt, cubes re-placed), **not** the rise-wave
-  animation. The `reset()` button *does* play the rise choreography.
-  Speed/palette/mosaic are live with no reset.
-- **Transparency divergence:** fading cubes use standard alpha blend with depth
-  write still on, so an occasional fading cube can blend slightly wrong against
-  another cube directly behind it. Cubes are packed opaque-first each frame to
-  minimise this; it's an accepted artifact at this scale.
-- **Growable square storage:** grids run up to 1000×1000, so the square storage
-  buffer and the board arrays (`cellState`/`sinkAt`/`riseFrom`) are allocated to
-  the current grid and grown when it increases (rebuilding the bind group),
-  rather than always reserving the maximum — a 1000² board is a 16 MB instance
-  buffer and ~1 M CPU-side cells per frame, so **very large grids are heavy**
-  (both the per-frame cell sweep in JS and the instance draw). Cube storage
-  stays fixed at 64. Depth texture is the only other size-dependent resource
-  (lazy, recreated on resize, destroyed in `destroy`).
-- **Geometry:** squares are a thin box (`y ∈ [−0.14, 0]`, footprint 0.92·pitch
-  so gaps read); cubes a unit box with per-face normals (24 verts) for the
-  reflection lighting. `cullMode: "none"` on both — cheap at this vertex count,
-  sidesteps winding bugs, depth resolves occlusion.
-- **Not bevelled yet** (Ideas) — cubes are hard-edged; the chamfer that "sells
-  metal" is a follow-up alongside the cubemap.
-- **Uniform block** is `viewProj(64) + camPos(16) + palA/B/C/D(64) +
-  params(16) + light(16) = 176 B`; the doodle owns `group(0)` bindings 0–2
-  (uniform, square storage, cube storage).
+- **Rolling is incremental & drift-free.** The pose updates by an exact rotation
+  about the world pivot edge; for tiling solids `sim3.mjs` confirms the footprint
+  stays lattice-exact to ~1e-13 over hundreds of rolls.
+- **`poseForCell`** brute-forces the yaw over all vertex correspondences (an
+  equilateral triangle's mirror is a 60° rotation, so naive 120° steps miss it —
+  a real bug caught in the prototype).
+- **Collision** is a `overlap()` SAT test between convex footprints with an
+  edge-touching margin, over stamps found via a **spatial hash** (buckets keyed by
+  footprint bbox, bucket size ≈ face diameter). Spawn slots: the shared lattice
+  for tiling solids, a coarse grid for the rest; a slot is free if its footprint
+  overlaps no stamp. Arena is a world rectangle from `gridX·gridY` × edge length.
+- **Tile mesh** is rebuilt each frame from `stamps` into a growable vertex
+  buffer, capped at `MAX_TILE_FLOATS` (~24 MB; one-time warn if exceeded). Large
+  grids / many stamps are heavy.
+- **Transparency:** exploding solids alpha-blend with depth write on (drawn after
+  the opaque rolling ones). Accepted at this scale.
+- **Uniform block** 128 B: `viewProj + camPos + envTint + params + light`; group(0)
+  bindings 0–1 (uniform, solid storage). Solid instance is 96 B (mat4 + tint + a
+  colour `vec4`); tiles are a plain vertex mesh of `pos + colour` (24 B/vertex).
+- All matrix math is Float64 for pose precision, packed to Float32 for the GPU.
+  Nothing relies on identifier names surviving minification (§3).
 
 ## Ideas
 
-- Bevelled cube edges (tiny chamfer in the geometry) — sells "metal" hard
-  for ~24 extra triangles per cube, and gives the reflections bright edge
-  glints.
-- Trail mode: vacated squares leave a faint ghost outline at floor level.
-- A "greedy" behaviour toggle: cubes prefer the neighbour with the most
-  alive neighbours (survive longer) vs pure random (current spec).
-- Stats overlay in standalone mode: iteration count, cubes mobile/stranded,
-  squares remaining, longest run since load.
-- Reflective floor (mirror the cubes in the alive squares) — cheap planar
-  reflection pass; would compound nicely with the cubemap but is a separate
-  effect. Later, if ever.
+- **The big one:** the dynamic environment-cubemap (solids mirror the mosaic and
+  each other; analytic layer becomes the `quality < 1` fallback).
+- Bevelled solid edges for brighter glints.
+- More non-tiling solids (rest of the Archimedean set, prisms/antiprisms,
+  Catalan duals) — the hull builder takes any convex vertex set.
+- Tune the explosion (debris arcs, a flash, a shockwave on the mosaic); fade
+  each tile in as it's stamped; per-generation hue drift; a stats overlay.

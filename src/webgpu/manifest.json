@@ -1,5 +1,5 @@
 {
-  "generated": "2026-07-19",
+  "generated": "2026-07-20",
   "doodles": [
     {
       "slug": "001-rgb-cube",
@@ -34,7 +34,7 @@
       "slug": "003-rolling-decay",
       "path": "doodles/003-rolling-decay/",
       "title": "Rolling Decay",
-      "description": "Shiny cubes tip square-by-square across a chessboard, fading out when stranded and sinking the floor behind them until nothing is left.",
+      "description": "Coloured solids roll across an arena stamping their faces in their own hue; the tiling ones lay a seamless mosaic, the rest explode the moment a face would overlap.",
       "tags": [
         "mesh",
         "3d",

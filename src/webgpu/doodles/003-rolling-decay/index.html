@@ -65,10 +65,11 @@
   .panel .row .lbl b { font-weight: 600; color: #e9e9ee; }
   .panel input[type="range"] { width: 100%; accent-color: #9aa0ff; }
   .panel select {
-    width: 100%; background: rgba(255,255,255,0.06); color: #e9e9ee;
+    width: 100%; background: #1a1a22; color: #e9e9ee;
     border: 1px solid rgba(255,255,255,0.14); border-radius: 6px;
     padding: 4px 6px; font: inherit; font-size: 12px;
   }
+  .panel select option { background: #1a1a22; color: #e9e9ee; }
   .panel .inline { flex-direction: row; align-items: center; justify-content: space-between; gap: 8px; }
   .panel .btnrow { display: flex; gap: 8px; margin-top: 2px; }
   .panel .btnrow button {
@@ -79,6 +80,8 @@
     border-radius: 6px; padding: 6px 8px; font: inherit; font-size: 12px; cursor: pointer;
   }
   .panel .btnrow button:hover { background: rgba(154,160,255,0.26); }
+  .panel .chk { display: flex; align-items: center; gap: 7px; }
+  .panel .hint { margin: 4px 0 0; color: #8a8a97; font-size: 11px; line-height: 1.35; }
   .panel summary { cursor: pointer; color: #9aa0ff; list-style: none; font-size: 12px; }
   .panel summary::-webkit-details-marker { display: none; }
 
@@ -102,13 +105,14 @@
     <a class="back" href="../../index.html">← gallery</a>
     <h1>Rolling Decay</h1>
     <p class="desc">
-      Shiny cubes tip square-by-square across a chessboard, sinking the floor
-      behind them until every cube is stranded.
+      Regular and semiregular solids roll across an arena stamping their faces —
+      the tiling ones lay a seamless mosaic, the rest explode the moment a face
+      would overlap.
     </p>
   </header>
 
   <div id="stage">
-    <canvas id="c" aria-label="Metal cubes rolling across a chessboard whose squares sink away behind them, seen from a slowly orbiting three-quarter view."></canvas>
+    <canvas id="c" aria-label="Metal regular and semiregular solids rolling edge over edge across an arena, stamping their faces into a mosaic; tiling solids fill it seamlessly while non-tiling ones burst apart when a face would overlap. Seen from a slowly orbiting three-quarter view."></canvas>
 
     <div class="controls"><button id="toggle" type="button">Pause</button></div>
 
@@ -124,25 +128,28 @@
         <input type="range" id="r-gy" min="2" max="1000" step="1" value="12" />
       </div>
       <div class="row">
-        <span class="lbl">cubes <b id="v-cubes">6</b></span>
+        <span class="lbl">shape</span>
+        <select id="r-shape"></select>
+      </div>
+      <div class="row">
+        <span class="lbl">solids <b id="v-cubes">6</b></span>
         <input type="range" id="r-cubes" min="1" max="64" step="1" value="6" />
       </div>
       <div class="row">
         <span class="lbl">speed <b id="v-speed">1.5</b>/s</span>
         <input type="range" id="r-speed" min="0.25" max="8" step="0.25" value="1.5" />
       </div>
-      <div class="row">
-        <span class="lbl">palette</span>
-        <select id="r-pal"></select>
-      </div>
-      <div class="row">
-        <span class="lbl">mosaic <b id="v-mosaic">0.00</b></span>
-        <input type="range" id="r-mosaic" min="0" max="1" step="0.01" value="0" />
+      <label class="chk">
+        <input type="checkbox" id="r-auto" checked /> auto-orbit
+      </label>
+      <div class="btnrow">
+        <button id="r-colors" type="button">new colours</button>
+        <button id="r-view" type="button">reset view</button>
       </div>
       <div class="btnrow">
-        <button id="r-rand" type="button">randomise</button>
-        <button id="r-reset" type="button">reset</button>
+        <button id="r-reset" type="button">reset board</button>
       </div>
+      <p class="hint">drag to orbit · scroll to zoom · shift- or right-drag to pan</p>
     </details>
   </div>
 
@@ -205,26 +212,23 @@
         bindSlider("r-gy", "v-gy", (v) => String(v | 0),
           (v) => instance.setGrid({ x: instance.getGrid().x, y: v }));
         bindSlider("r-cubes", "v-cubes", (v) => String(v | 0),
-          (v) => instance.setCubeCount(v));
+          (v) => instance.setSolidCount(v));
         bindSlider("r-speed", "v-speed", (v) => v.toFixed(2),
           (v) => instance.setSpeed(v));
-        bindSlider("r-mosaic", "v-mosaic", (v) => v.toFixed(2),
-          (v) => instance.setMosaic(v));
 
-        // Palette dropdown, populated from the doodle's own list.
-        const sel = $("r-pal");
-        for (const name of instance.paletteNames) {
+        // Shape dropdown, populated from the doodle's own list.
+        const shape = $("r-shape");
+        for (const name of instance.solidNames) {
           const opt = document.createElement("option");
           opt.value = name; opt.textContent = name;
-          sel.appendChild(opt);
+          shape.appendChild(opt);
         }
-        sel.value = instance.getPalette();
-        sel.addEventListener("change", () => instance.setPalette(sel.value));
+        shape.value = instance.getSolid();
+        shape.addEventListener("change", () => instance.setSolid(shape.value));
 
-        $("r-rand").addEventListener("click", () => {
-          instance.randomPalette();
-          sel.value = ""; // "Random" isn't a listed option; clear the selection
-        });
+        $("r-auto").addEventListener("change", (e) => instance.setAutoOrbit(e.target.checked));
+        $("r-colors").addEventListener("click", () => instance.newColors());
+        $("r-view").addEventListener("click", () => instance.resetView());
         $("r-reset").addEventListener("click", () => instance.reset());
       } catch (err) {
         console.error(err);
