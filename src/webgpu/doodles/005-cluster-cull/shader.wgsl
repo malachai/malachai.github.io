@@ -1,39 +1,40 @@
-// 005-cluster-cull — generative composition machine, pure-SDF fragment.
+// 005-cluster-cull — generative overlap-depth machine, pure-SDF fragment.
 //
-// One fullscreen triangle + one fragment shader; the JS side does the throw,
-// the union-find cull and the whole animation clock, then writes a per-shape
-// record each frame and the shader only draws. Doodle owns group(0):
-//   binding(0) uniform Globals, binding(1) read-only storage array<Shape>.
-// See ../../spec.md §9.
+// One fullscreen triangle + one fragment shader; the JS side does the throw and
+// the animation clock, then writes a per-shape record and the shader draws.
+// Doodle owns group(0): binding(0) uniform Globals, binding(1) read-only
+// storage array<Shape>. See ../../spec.md §9.
 //
-// COORDINATE SPACE. All geometry is in "n-units": normalised, centred, scaled
-// by the viewport's min dimension. A fragment at pixel `fc` maps to
-//   qn = (fc - res*0.5) / minDim,   minDim = min(res.x, res.y).
-// Shape centres/sizes live in the same n-units; stroke half-width arrives in
-// pixels and is divided by minDim here. This makes the piece resolution- and
+// THE RULE. Shapes are thrown unseen. For each pixel, its "depth" is how many
+// shapes cover it (filled area, sdf ≤ 0). We draw the OUTLINE of the region
+// covered by at least `x` shapes — the deep overlaps, not the outer union.
+// A point on shape i's edge is on that boundary exactly when `x−1` OTHER shapes
+// cover it (crossing i's edge there toggles depth between x−1 and x). So:
+// count total coverage once, then draw shape i's stroke where
+// (coverage − i's-own-coverage) == x−1. x=1 gives back the outer union outline.
+//
+// COORDINATE SPACE ("n-units"): normalised, centred, scaled by the viewport min
+// dimension — qn = (fragCoord − res/2) / minDim. Shape centres/sizes live here;
+// stroke half-width arrives in pixels and is divided by minDim. Resolution- and
 // (via the throw) aspect-relative, so resize() is a no-op.
 //
-// SDF NOTE. The seven shape SDFs are duplicated in doodle.js (connectivity).
+// SDF NOTE. The seven shape SDFs are duplicated in doodle.js (coverage test).
 // The two copies MUST agree — same canonical unit vertices, same maths. Any
-// edit here edits there. Canonical shapes all have bounding radius 1, so a
-// record's `size` is its bounding radius in n-units.
+// edit here edits there. Canonical shapes all have bounding radius 1.
 
 const PI  : f32 = 3.14159265359;
 const TAU : f32 = 6.28318530718;
 
-// Casualty ink→grey as it dies (see Shape.tint).
-const GREY : vec3<f32> = vec3<f32>(0.34, 0.35, 0.40);
-
 struct Globals {
-  // p0: res.xy, time, shapeCount (live record count)
+  // p0: res.xy, time, shapeCount
   p0 : vec4<f32>,
-  // p1: fuse (0 scatter → 1 fused survivors), globalFade, glow, pad
+  // p1: x (overlap threshold), globalFade, (unused), pad
   p1 : vec4<f32>,
   // ink.rgb (outline colour), pad
   ink : vec4<f32>,
 };
 
-// One thrown shape. All scalars (align 4); stride 48 B, a multiple of 16.
+// One thrown shape. All scalars (align 4); stride 32 B, a multiple of 16.
 struct Shape {
   kind       : f32,   // 0 circle 1 square 2 triangle 3 oval 4 star 5 trapezoid 6 parallelogram
   cx         : f32,   // centre (n-units, centred)
@@ -42,10 +43,6 @@ struct Shape {
   cosR       : f32,   // rotation
   sinR       : f32,
   strokeHalf : f32,   // half stroke width (px)
-  scale      : f32,   // animated size multiplier (pop-in / casualty shrink)
-  alpha      : f32,   // individual-outline opacity (pop-in / casualty fade)
-  tint       : f32,   // 0 ink … 1 grey (casualty death colour)
-  surv       : f32,   // 1 = survivor (feeds the union), 0 = casualty
   pad        : f32,
 };
 
@@ -80,7 +77,9 @@ fn sdPoly(p : vec2<f32>, v : ptr<function, array<vec2<f32>, 10>>, n : i32) -> f3
     let w = p - vi;
     let b = w - e * clamp(dot(w, e) / dot(e, e), 0.0, 1.0);
     d = min(d, dot(b, b));
-    let c = vec3<bool>(p.y >= vi.y, p.y < vj.y, e.x * w.y > e.y * w.x);
+    // Parenthesise each comparison: a bare `<`/`>` inside the vec3<bool>(…)
+    // constructor is otherwise parsed as a template argument list.
+    let c = vec3<bool>((p.y >= vi.y), (p.y < vj.y), (e.x * w.y > e.y * w.x));
     if (all(c) || all(!c)) { s = -s; }
     j = i;
   }
@@ -89,7 +88,7 @@ fn sdPoly(p : vec2<f32>, v : ptr<function, array<vec2<f32>, 10>>, n : i32) -> f3
 
 // Approximate ellipse SDF (near-exact at the boundary — plenty for a thin
 // stroke). Sign is correct everywhere inside/outside, so it is safe for the
-// connectivity inside-test too (mirrored in JS).
+// coverage inside-test too (mirrored in JS).
 fn sdEllipse(p : vec2<f32>, ab : vec2<f32>) -> f32 {
   let k1 = length(p / ab);
   let k2 = length(p / (ab * ab));
@@ -144,12 +143,10 @@ fn shapeSDF(kind : i32, q : vec2<f32>) -> f32 {
   return sdPoly(q, &v, n);
 }
 
-// Signed distance (n-units) to shape i's outline at pixel-space point qn.
-fn shapeDist(i : i32, qn : vec2<f32>) -> f32 {
-  let s = shapes[i];
-  let sz = s.size * s.scale;
+// Signed distance (n-units) to shape s's outline at pixel-space point qn.
+fn distOf(s : Shape, qn : vec2<f32>) -> f32 {
+  let sz = s.size;
   let rel = qn - vec2<f32>(s.cx, s.cy);
-  // rotate by -θ into the shape's local frame
   let local = vec2<f32>( s.cosR * rel.x + s.sinR * rel.y,
                         -s.sinR * rel.x + s.cosR * rel.y);
   return sz * shapeSDF(i32(s.kind + 0.5), local / max(sz, 1e-5));
@@ -162,9 +159,8 @@ fn fs_main(in : VSOut) -> @location(0) vec4<f32> {
   let qn     = (in.pos.xy - res * 0.5) / minDim;
 
   let count  = i32(u.p0.w + 0.5);
-  let fuse   = clamp(u.p1.x, 0.0, 1.0);
+  let x      = i32(u.p1.x + 0.5);       // overlap threshold
   let gFade  = clamp(u.p1.y, 0.0, 1.0);
-  let glow   = u.p1.z;
   let ink    = u.ink.rgb;
   let aa     = 1.2 / minDim;
 
@@ -172,41 +168,29 @@ fn fs_main(in : VSOut) -> @location(0) vec4<f32> {
   var col = vec3<f32>(0.021, 0.023, 0.030);
   col += vec3<f32>(0.010, 0.011, 0.017) * (1.0 - smoothstep(0.0, 0.9, length(qn)));
 
-  var survIndiv = 0.0;    // survivors' individual-outline coverage (max)
-  var dU        = 1e30;   // union: nearest survivor signed distance
-  var wArg      = 0.004;  // stroke half-width (n-units) of the union argmin
-  var glowAcc   = 0.0;    // soft halo accumulator (nearest survivor line)
+  // Pass 1: how many shapes cover this pixel (filled area).
+  var cov = 0;
+  for (var i = 0; i < count; i = i + 1) {
+    if (distOf(shapes[i], qn) <= 0.0) { cov = cov + 1; }
+  }
 
+  // Pass 2: draw shape i's stroke where exactly x−1 OTHER shapes cover the
+  // pixel — i.e. i's edge lies on the boundary of the depth-≥-x region. A
+  // segment buried deeper (others ≥ x) or too shallow (others < x−1) is left
+  // out, so only the inner overlap outline survives.
+  var lineCov = 0.0;
   for (var i = 0; i < count; i = i + 1) {
     let s = shapes[i];
-    let sz = s.size * s.scale;
-    if (sz < 1e-5 || s.alpha < 0.002) { continue; }
-
-    let d  = shapeDist(i, qn);
-    let wN = max(s.strokeHalf, 0.5) / minDim;      // stroke half-width, n-units
+    let d = distOf(s, qn);
+    let wN = max(s.strokeHalf, 0.5) / minDim;
     let band = 1.0 - smoothstep(wN - aa, wN + aa, abs(d));
-
-    if (s.surv > 0.5) {
-      survIndiv = max(survIndiv, band * s.alpha);
-      if (d < dU) { dU = d; wArg = wN; }
-      glowAcc = max(glowAcc, exp(-abs(d) * minDim * 0.03));
-    } else {
-      // Casualty: composite its (greying, fading) individual outline now.
-      let cc = mix(ink, GREY, s.tint);
-      col = mix(col, cc, band * s.alpha * gFade);
+    if (band > 0.0) {
+      var others = cov;
+      if (d <= 0.0) { others = others - 1; }   // exclude i's own coverage
+      if (others == x - 1) { lineCov = max(lineCov, band); }
     }
   }
 
-  // Survivors crossfade from individual outlines to the boolean-union outline.
-  // At fuse=1 interior segments go deeply negative under the min and vanish.
-  let unionCov = 1.0 - smoothstep(wArg - aa, wArg + aa, abs(dU));
-  let survCov  = mix(survIndiv, unionCov, fuse);
-
-  col = mix(col, ink, survCov * gFade);
-
-  // Mild glow: a slight self-bloom on the ink plus a broad soft halo.
-  col += ink * survCov * 0.14 * gFade;
-  col += ink * glowAcc * glow * mix(0.35, 1.0, fuse) * gFade;
-
+  col = mix(col, ink, lineCov * gFade);
   return vec4<f32>(col, 1.0);
 }

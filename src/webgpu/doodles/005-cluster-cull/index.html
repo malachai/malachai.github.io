@@ -94,6 +94,20 @@
   .panel input[type="color"] {
     width: 34px; height: 22px; padding: 0; border: none; background: none; cursor: pointer;
   }
+  /* Shape-type pool: a wrap of toggle chips. */
+  .panel .chips { display: flex; flex-wrap: wrap; gap: 5px; }
+  .panel .chips button {
+    flex: 0 0 auto;
+    background: rgba(255,255,255,0.06);
+    color: #8b8b98;
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 999px; padding: 3px 9px; font: inherit; font-size: 11px; cursor: pointer;
+  }
+  .panel .chips button.on {
+    background: rgba(138,143,240,0.20);
+    color: #e4e5fb;
+    border-color: rgba(138,143,240,0.45);
+  }
   .panel .btnrow { display: flex; gap: 8px; margin-top: 2px; }
   .panel .btnrow button {
     flex: 1;
@@ -133,13 +147,13 @@
     <a class="back" href="../../index.html">← gallery</a>
     <h1>Cluster Cull</h1>
     <p class="desc">
-      A scatter of outlined shapes clusters by overlap; small clusters are
-      culled and survivors fuse into one composite silhouette.
+      Shapes are thrown unseen; the outline of every region covered by at least
+      x of them is drawn — the deep overlaps, not the outer union.
     </p>
   </header>
 
   <div id="stage">
-    <canvas id="c" aria-label="A field of outlined shapes is thrown at random, grouped by overlap, and the larger clusters merge into single composite outlines while the rest fade away."></canvas>
+    <canvas id="c" aria-label="Outlines of deep-overlap regions: where at least x hidden shapes pile up, the boundary of that region is drawn, fading in and out each cycle."></canvas>
 
     <div class="controls"><button id="toggle" type="button">Pause</button></div>
 
@@ -151,8 +165,12 @@
         <input type="range" id="r-count" min="5" max="64" step="1" value="24" />
       </div>
       <div class="row">
-        <span class="lbl">min cluster (x) <b id="v-x">3</b></span>
+        <span class="lbl">min overlap (x) <b id="v-x">3</b></span>
         <input type="range" id="r-x" min="1" max="10" step="1" value="3" />
+      </div>
+      <div class="row">
+        <span class="lbl">shape pool</span>
+        <div class="chips" id="chips"></div>
       </div>
       <div class="row">
         <span class="lbl">size <b id="v-size">6–16%</b></span>
@@ -190,9 +208,9 @@
         <button id="r-rethrow" type="button">re-throw</button>
       </div>
       <div class="stats">
-        <span>thrown <b id="s-thrown">–</b></span>
-        <span>survivors <b id="s-surv">–</b></span>
-        <span>clusters <b id="s-clu">–</b></span>
+        <span>shapes <b id="s-thrown">–</b></span>
+        <span>max depth <b id="s-depth">–</b></span>
+        <span>x <b id="s-x">–</b></span>
       </div>
     </details>
   </div>
@@ -278,7 +296,7 @@
         };
 
         bindSlider("r-count", "v-count", (v) => String(v | 0), (v) => instance.setShapeCount(v));
-        bindSlider("r-x", "v-x", (v) => String(v | 0), (v) => instance.setMinCluster(v));
+        bindSlider("r-x", "v-x", (v) => String(v | 0), (v) => instance.setMinOverlap(v));
         bindDualRange("r-szmin", "r-szmax", "f-size", "v-size",
           (a, b) => Math.round(a * 100) + "–" + Math.round(b * 100) + "%",
           (v) => instance.setSizeRange({ min: v }), (v) => instance.setSizeRange({ max: v }));
@@ -292,13 +310,36 @@
         bindSlider("r-hold", "v-hold", (v) => v.toFixed(1) + " s", (v) => instance.setHoldTime(v));
         $("r-rethrow").addEventListener("click", () => instance.rethrow());
 
-        // ---- stats read-out (thrown / survivors / clusters) ----
-        const sThrown = $("s-thrown"), sSurv = $("s-surv"), sClu = $("s-clu");
+        // ---- shape-type pool: a chip per type; toggling bakes into the next
+        // throw. The doodle refuses to disable the last one (chip stays on). ---
+        const chips = $("chips");
+        const names = instance.getTypeNames();
+        const on = instance.getEnabledTypes();
+        const abbr = { circle: "circ", square: "sq", triangle: "tri", oval: "oval",
+                       star: "star", trapezoid: "trap", parallelogram: "par" };
+        names.forEach((nm, i) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.textContent = abbr[nm] || nm;
+          b.title = nm;
+          if (on[i]) b.classList.add("on");
+          b.addEventListener("click", () => {
+            const want = !b.classList.contains("on");
+            instance.setTypeEnabled(i, want);
+            // Reflect the doodle's actual state (it may refuse the last off).
+            const now = instance.getEnabledTypes()[i];
+            b.classList.toggle("on", now);
+          });
+          chips.appendChild(b);
+        });
+
+        // ---- stats read-out (shapes / deepest overlap / current x) ----
+        const sThrown = $("s-thrown"), sDepth = $("s-depth"), sX = $("s-x");
         const tick = () => {
           const st = instance.getStats();
           sThrown.textContent = st.thrown;
-          sSurv.textContent = st.survivors;
-          sClu.textContent = st.clusters;
+          sDepth.textContent = st.maxDepth;
+          sX.textContent = st.x;
           requestAnimationFrame(tick);
         };
         requestAnimationFrame(tick);
